@@ -58,9 +58,13 @@ class ServerTestCase(unittest.TestCase):
 
     def setUp(self):
         # These tests assert routing, payloads and status codes, not the limiter.
-        # A generous budget keeps them independent of how many audits a method
-        # makes; the limit itself is covered in test_rate_limit.py.
-        set_default_throttle(AuditThrottle(per_minute=1000, burst=1000, concurrent=8))
+        # A generous budget for BOTH modes keeps them independent of how many
+        # audits a method makes; the limits themselves are covered in
+        # test_rate_limit.py and test_mode_budgets.py.
+        for mode in ("live", "fixture"):
+            set_default_throttle(
+                AuditThrottle(per_minute=1000, burst=1000, concurrent=8, mode=mode), mode
+            )
         self.addCleanup(set_default_throttle, None)
 
     def json_get(self, path):

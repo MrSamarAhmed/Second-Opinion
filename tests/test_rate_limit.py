@@ -70,11 +70,19 @@ def _request(port, path, forward_for=None):
 
 
 class ThrottleTestCase(unittest.TestCase):
-    """A server per test class and a deliberately small budget per test."""
+    """A server per test class and a deliberately small budget per test.
+
+    Both budgets are installed explicitly: a test that only pins the live budget
+    would otherwise inherit whatever the ambient environment says about fixture
+    audits, and the two are meant to be independent.
+    """
 
     per_minute = 6
     burst = 2
     concurrent = 4
+    fixture_per_minute = 60
+    fixture_burst = 20
+    fixture_concurrent = 4
     forward_for = "203.0.113.9"
 
     @classmethod
@@ -90,15 +98,29 @@ class ThrottleTestCase(unittest.TestCase):
         cls.httpd.server_close()
         cls.thread.join(timeout=5)
 
-    def setUp(self):
-        CountingAdapter.reset()
+    def install_budgets(self):
         set_default_throttle(
             AuditThrottle(
                 per_minute=self.per_minute,
                 burst=self.burst,
                 concurrent=self.concurrent,
-            )
+                mode="live",
+            ),
+            "live",
         )
+        set_default_throttle(
+            AuditThrottle(
+                per_minute=self.fixture_per_minute,
+                burst=self.fixture_burst,
+                concurrent=self.fixture_concurrent,
+                mode="fixture",
+            ),
+            "fixture",
+        )
+
+    def setUp(self):
+        CountingAdapter.reset()
+        self.install_budgets()
         self.addCleanup(set_default_throttle, None)
         patcher = mock.patch("second_opinion.server.LiveAdapter", CountingAdapter)
         patcher.start()
@@ -147,17 +169,20 @@ class TestAuditBudget(ThrottleTestCase):
         self.assertEqual(
             payload["limit"],
             {
+                "mode": "live",
                 "per_minute": self.per_minute,
                 "burst": self.burst,
                 "concurrent": self.concurrent,
+                "spends_quota": True,
                 "storage": "in-memory",
                 "resets_on_restart": True,
             },
         )
+        self.assertEqual(payload["mode"], "live")
 
     def test_refill_restores_service_without_a_restart(self):
-        throttle = AuditThrottle(per_minute=60, burst=1, concurrent=4)
-        set_default_throttle(throttle)
+        throttle = AuditThrottle(per_minute=60, burst=1, concurrent=4, mode="live")
+        set_default_throttle(throttle, "live")
         self.assertEqual(self.audit()[0], 200)
         self.assertEqual(self.audit()[0], 429)
         # 60/minute is one token a second; the bucket refills in process time.
@@ -170,9 +195,7 @@ class TestAuditBudget(ThrottleTestCase):
         for _ in range(self.burst):
             self.audit()
         self.assertEqual(self.audit()[0], 429)
-        set_default_throttle(
-            AuditThrottle(per_minute=self.per_minute, burst=self.burst, concurrent=self.concurrent)
-        )
+        self.install_budgets()
         self.assertEqual(self.audit()[0], 200)
 
 
@@ -230,17 +253,33 @@ class TestValidationBeforeSpend(ThrottleTestCase):
         _, _, payload = self.audit(seed="Laufey", mode=marker)
         self.assertNotIn(marker, json.dumps(payload))
 
-    def test_fixture_mode_audits_are_bounded_too(self):
-        # Fixture mode costs no quota but reads local files, and it shares the
-        # same bucket so a loop cannot hammer the disk either.
-        self.per_minute = 6
+    def test_fixture_mode_does_not_empty_the_live_budget(self):
+        # The reported defect: a fixture audit used to draw on the quota guard,
+        # so a page in fixture mode could be refused with "audit rate limit
+        # reached" while having spent nothing. Fixture requests now hit their own
+        # bucket, and the live one is untouched.
         self.burst = 1
-        set_default_throttle(AuditThrottle(per_minute=6, burst=1, concurrent=4))
+        self.install_budgets()
         query = urllib.parse.urlencode({"seed": "Laufey", "mode": "fixture"})
-        first = _request(self.port, f"/api/audit?{query}", self.forward_for)[0]
-        second = _request(self.port, f"/api/audit?{query}", self.forward_for)[0]
-        self.assertIn(first, (200, 503))  # 503 when the checkout has no fixtures
-        self.assertEqual(second, 429)
+        for _ in range(3):
+            status = _request(self.port, f"/api/audit?{query}", self.forward_for)[0]
+            self.assertIn(status, (200, 503))  # 503 when this checkout has no fixtures
+        self.assertEqual(CountingAdapter.calls, [])
+        self.assertEqual(self.audit()[0], 200)
+        self.assertEqual(self.audit()[0], 429)
+
+    def test_a_live_refusal_does_not_block_fixture_requests(self):
+        # The other direction: exhausting the live budget must not stop someone
+        # from browsing the local captures. Same client, same seed, other mode.
+        self.burst = 1
+        self.install_budgets()
+        self.assertEqual(self.audit()[0], 200)
+        self.assertEqual(self.audit()[0], 429)
+        query = urllib.parse.urlencode({"seed": "Laufey", "mode": "fixture"})
+        status, _, raw = _request(self.port, f"/api/audit?{query}", self.forward_for)
+        payload = json.loads(raw)
+        self.assertNotEqual(status, 429)
+        self.assertNotEqual(payload.get("code"), "rate_limited")
 
 
 class TestConcurrencyGate(ThrottleTestCase):

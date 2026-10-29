@@ -65,7 +65,9 @@ The key must never be baked into an image or passed as a build argument.
 responses from a local `data/fixtures/` directory. That directory is intentionally
 not present in this clean publication copy. The fixture tests skip when it is
 absent, and live mode never silently falls back to fixtures. With no key,
-`/api/audit` returns HTTP 503.
+`/api/audit` returns HTTP 503. Fixture mode opens no socket and builds no API
+client — see [Audit endpoint limits](#audit-endpoint-limits), where it also has
+its own request budget.
 
 ## Seed catalogue
 
@@ -93,37 +95,56 @@ returns recommendations, not the seed itself.
 One live audit costs **three Qloo requests** — search, seed record, candidate
 set — and the endpoint is open to any visitor. Without a bound, a single page
 left refreshing in a loop spends the operator's quota. So `/api/audit` carries
-two in-process limits from `second_opinion/throttle.py`, and every check runs
-*before* the API client is built, which means a refused request costs nothing:
+in-process limits from `second_opinion/throttle.py`, and every check runs
+*before* the API client is built, which means a refused request costs nothing.
 
-| Limit | Default | What it does |
+There is **one budget per mode**, because the two modes do not cost the same
+thing. A fixture audit reads `data/fixtures/**` from local disk and sends no
+request anywhere; charging it to the quota guard both blocked local work and
+told the visitor their Qloo budget was spent when nothing had been spent:
+
+| Budget | Default | What it protects |
 | --- | --- | --- |
-| Per-client token bucket | 6 audits/minute, burst 3 | Past the burst, the response is `429` with `Retry-After` and a JSON body explaining the budget. |
-| Audits in flight | 2 | One per client is not enough: this caps simultaneous upstream calls at roughly `2 × 3` so a few slow Qloo responses cannot pile threads onto a small instance. Busy responses are `503` with `Retry-After: 2`. |
-| Seed length | 120 characters | Longer input is `400` and never reaches Qloo. Real artist names are far shorter; this only bounds what one request can put on the wire. |
+| Live, per client | 6 audits/minute, burst 3 | The operator's Qloo quota. Past the burst the response is `429` with `Retry-After` and a body naming the budget. |
+| Live, in flight | 2 | Caps simultaneous upstream calls at roughly `2 × 3`, so slow Qloo responses cannot pile threads onto a small instance. Busy is `503` with `Retry-After: 2`. |
+| Fixture, per client | 30 audits/minute, burst 10 | Local work only: the JSON parse and report build. It spends no quota, so it is sized generously and refused requests still cost nothing upstream. |
+| Fixture, in flight | 4 | A loop cannot occupy the instance with more than four local audits. |
+| Seed length | 120 characters | Longer input is `400` in either mode and never reaches an adapter. |
+
+Exhausting one budget leaves the other alone: after the live quota guard has
+refused a client, that client can still browse fixtures, and a page running
+fixture audits all day never empties the live bucket. Nothing falls open either:
+`/api/audit` rejects an unrecognised `mode` with `400` before spending anything,
+and the lookup that chooses a budget, `throttle_for_mode()`, answers an unknown
+mode with the *live* bucket rather than the generous one — so a future caller
+that passes a mode the throttle does not know does not inherit a free pass.
 
 `/api/seeds`, `/api/rules`, `/api/health` and the page itself are
 hand-authored or static, cost nothing, and are deliberately not throttled — a
 judge can reload them freely. The CLI is a single-user local tool and is not
 throttled either. A refused audit is not a dead end in the interface: the page
-shows the status, the budget in force and the wait before the next one is
-accepted, rather than a spinner that never finishes.
+says which budget ran out, whether it spends Qloo quota, and counts down to the
+next accepted audit. The countdown only writes text — the page sends no request
+on a timer, so a limit can never turn into the retry loop it exists to prevent.
 
-Defaults are settable without touching code, through `SO_AUDIT_PER_MINUTE`,
-`SO_AUDIT_BURST` and `SO_MAX_CONCURRENT_AUDITS`; a missing, non-numeric or
-zero/negative value keeps the default, and an oversized value is clamped
-(a burst above the steady rate is reduced to it, so the limit cannot be
-switched off by configuration).
+Defaults are settable without touching code: `SO_AUDIT_PER_MINUTE`,
+`SO_AUDIT_BURST` and `SO_MAX_CONCURRENT_AUDITS` for live, and
+`SO_FIXTURE_AUDIT_PER_MINUTE`, `SO_FIXTURE_AUDIT_BURST` and
+`SO_FIXTURE_MAX_CONCURRENT_AUDITS` for fixture. A missing, non-numeric or
+zero/negative value keeps the default, and an oversized value is clamped (a
+burst above the steady rate is reduced to it, so neither limit can be switched
+off by configuration).
 
-Three limitations are stated plainly because they matter for a hosted demo:
+These limitations are stated plainly because they matter for a hosted demo:
 the buckets are **in memory**, so a restart, a redeploy or an idle spin-down
 hands every client a fresh burst; they are **per instance**, so more instances
-multiply the allowance; and the client is identified by the **rightmost** entry
-of `X-Forwarded-For`, because that entry alone is the proxy's own record —
-anything to its left is text the visitor typed. A proxy that replaces the header
-and a proxy that appends to it both put the real client last, so the last entry
-is right under either behavior. No IP is stored: buckets are keyed by a
-truncated digest.
+multiply the allowance; they are **per mode, not per seed**, so two different
+seeds from one client draw on the same bucket; and the client is identified by
+the **rightmost** entry of `X-Forwarded-For`, because that entry alone is the
+proxy's own record — anything to its left is text the visitor typed. A proxy
+that replaces the header and a proxy that appends to it both put the real client
+last, so the last entry is right under either behavior. No IP is stored: buckets
+are keyed by a truncated digest.
 
 ## Failure behavior
 
@@ -137,8 +158,8 @@ truncated digest.
 | Seed has no usable scored metadata | refusal code `insufficient seed metadata` |
 | Receipt cannot be re-derived | candidate state becomes `UNVERIFIABLE` and the audit is void for that candidate |
 | Seed longer than 120 characters, or blank, or an unknown `mode`, or a non-numeric threshold | HTTP 400, no Qloo request, no limit token spent |
-| Per-client budget exhausted | HTTP 429 with `Retry-After`; nothing is sent to Qloo |
-| Too many audits in flight | HTTP 503 with `Retry-After: 2`; nothing is sent to Qloo |
+| That mode's per-client budget exhausted | HTTP 429 with `Retry-After`, naming the mode and whether it spends quota; nothing is sent to Qloo, in either mode |
+| Too many audits of that mode in flight | HTTP 503 with `Retry-After: 2`; nothing is sent to Qloo |
 | An unexpected error inside the audit path | HTTP 500 `internal audit error`; the traceback goes to the server log, never to the client |
 
 Every JSON response is scanned once for the credential value before it is
@@ -199,19 +220,19 @@ Verified suite, both runs with `QLOO_API_KEY` and `SO_MODE` unset:
 
 | Input present | Result |
 | --- | --- |
-| Clean publication copy — no `data/`, no `.env`, no captured responses | 192 tests: 135 passed, 0 failed, 0 errors, 57 skipped, exit code 0 |
-| The same copy with a local `data/fixtures/` directory temporarily available | 192 tests OK, 0 skips, exit code 0 |
+| Clean publication copy — no `data/`, no `.env`, no captured responses | 219 tests: 162 passed, 0 failed, 0 errors, 57 skipped, exit code 0 |
+| The same copy with a local `data/fixtures/` directory temporarily available | 219 tests OK, 0 skips, exit code 0 |
 
 The 57 skips are the fixture-dependent tests: they compare real payloads field by
 field, and the payloads they read are Qloo API responses that stay private and are
-not published with this repository. A public checkout therefore runs 135 tests and
+not published with this repository. A public checkout therefore runs 162 tests and
 skips those 57 with the reason
 
 ```text
 captured Qloo fixtures are not present in this checkout
 ```
 
-The skips are a missing-input condition, not a failure: the same 192 tests run
+The skips are a missing-input condition, not a failure: the same 219 tests run
 with 0 skips wherever the captured responses are available.
 
 Coverage includes receipt re-derivation, fabricated shared terms, normalization,
@@ -222,6 +243,13 @@ throttle: bucket arithmetic and refill under an injected clock, per-client
 isolation, the `X-Forwarded-For` rule that ignores client-supplied prefixes,
 refused requests making zero upstream calls, the in-flight gate, `Retry-After`,
 oversized-input rejection, and the redaction scan over error and refusal bodies.
+`tests/test_mode_budgets.py` covers the split specifically, on synthetic
+fixtures it writes itself so it runs on a clean checkout: a fixture audit that
+produces a full report without opening a socket or building an API client,
+fixture traffic that cannot draw on the live bucket, an exhausted live guard that
+still serves fixture requests, refusal text that names the mode that actually
+ran out, and a source check that the page's only timer is the countdown and
+that the countdown never fetches.
 
 ## Deployment
 
@@ -276,12 +304,13 @@ runs this with their own key is responsible for the terms attached to it.
 - A live audit depends on an operator-provided `QLOO_API_KEY` and on the current
   Qloo API behavior.
 - One live audit costs three Qloo requests, so a hosted demo spends the
-  operator's quota on other people's clicks. The audit budget is what bounds
-  that, not what authorizes it.
-- The audit budget is in-memory, per-instance state: a restart, a redeploy or a
-  free-tier idle spin-down refills every bucket, and running two instances
-  doubles the allowance. It is a quota guard, not access control — the demo has
-  no sign-in, so anyone within budget can run an audit.
+  operator's quota on other people's clicks. The live budget is what bounds
+  that, not what authorizes it. Fixture audits spend no quota and draw on their
+  own budget, so local testing never eats into the live allowance.
+- The audit budget is in-memory, per-instance, per-mode state: a restart, a
+  redeploy or a free-tier idle spin-down refills every bucket, and running two
+  instances doubles the allowance. It is a quota guard, not access control — the
+  demo has no sign-in, so anyone within budget can run an audit.
 - The clean-copy audit verifies local no-key behavior, not a hosted deployment.
 
 ## License

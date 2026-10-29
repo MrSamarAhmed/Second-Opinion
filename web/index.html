@@ -194,6 +194,31 @@ let RULES = null;
 let ACTIVE = null;
 let MODE = "live";
 let LIVE_READY = false;
+let RETRY_TIMER = null;
+
+// The 429 card counts down so the reader knows when to click again. It only ever
+// writes text: it must not re-send the audit, or a rate limit would turn itself
+// into the request loop the limit exists to prevent.
+function stopCountdown(){
+  if(RETRY_TIMER){ clearTimeout(RETRY_TIMER); RETRY_TIMER = null; }
+}
+
+function countdown(el, seconds, kind){
+  let left = Math.max(1, Math.round(Number(seconds) || 1));
+  const label = kind === "fixture" ? "fixture" : "live";
+  const tick = () => {
+    RETRY_TIMER = null;
+    // The card is built before it is attached, so the first tick only finds the
+    // element once it is on the page. Once it leaves the page — a new audit, a
+    // new seed — the countdown stops with it.
+    if(!document.body.contains(el)){ return; }
+    el.textContent = `Next ${label} audit from this client accepted in about ${left} second${left === 1 ? "" : "s"}.`;
+    left -= 1;
+    if(left <= 0){ RETRY_TIMER = setTimeout(() => { if(document.body.contains(el)) el.textContent = "Budget refilled — pick a seed to try again."; }, 1000); return; }
+    RETRY_TIMER = setTimeout(tick, 1000);
+  };
+  RETRY_TIMER = setTimeout(tick, 0);
+}
 
 function badge(text, cls){ const d=document.createElement("span"); d.className="badge "+(cls||""); d.textContent=text; return d; }
 
@@ -244,6 +269,7 @@ function renderSeeds(seeds){
 }
 
 async function selectSeed(seed){
+  stopCountdown();
   ACTIVE = seed;
   document.querySelectorAll(".seed").forEach(el => el.classList.toggle("active", el.dataset.id === seed.name));
   $("#stage").innerHTML = `<div class="skeleton">resolving seed and running the agent…</div>`;
@@ -259,6 +285,7 @@ async function selectSeed(seed){
 }
 
 function render(data, seed, status){
+  stopCountdown();
   const stage = $("#stage");
   stage.innerHTML = "";
   renderTrace(data.trace);
@@ -398,22 +425,37 @@ candidate: ${esc((d.candidate_sources||[]).join("\n           ") || "—")}</pre
 function errorCard(data, seed, status){
   const el = document.createElement("div");
   el.className = "refusal";
+  const mode = data.mode || MODE;
+  // Which budget ran out, said in terms of what that mode actually costs. A
+  // fixture read spends no quota, so it must not be described as quota.
+  const spendsQuota = (data.limit && typeof data.limit.spends_quota === "boolean")
+    ? data.limit.spends_quota : (mode !== "fixture");
+  const code = data.refusal_code || data.code;
   const hint = {
     "missing credentials": "The server has no QLOO_API_KEY in its environment.",
     "authentication failed": "Qloo rejected the credential the server is using.",
     "upstream timeout": "The request to Qloo timed out. Try the seed again.",
     "no results": "Qloo's artist search returned no match for this name.",
-    "rate_limited": "This client's audit budget is spent. /api/audit costs three Qloo requests, so the server limits it to protect the operator's quota.",
-    "audit_busy": "Every audit slot on this instance is busy with another request.",
-  }[data.refusal_code || data.code] || "";
+    "rate_limited": spendsQuota
+      ? "This client's live audit budget is spent. One live audit costs three Qloo requests, so the server bounds it to protect the operator's quota. Fixture audits draw on a separate budget and are unaffected."
+      : "This client's fixture audit budget is spent. Fixture mode reads saved captures on the server and sends nothing to Qloo, so no API quota was used — this limit only bounds local work. The live budget is untouched.",
+    "audit_busy": spendsQuota
+      ? "Every live audit slot on this instance is busy with another request."
+      : "Every fixture audit slot on this instance is busy with another request.",
+  }[code] || "";
   const wait = Number(data.retry_after_seconds);
-  const again = (Number.isFinite(wait) && wait > 0) ? ` Try again in about ${Math.round(wait)} seconds.` : "";
+  const timed = Number.isFinite(wait) && wait > 0 && (code === "rate_limited" || code === "audit_busy");
+  // When a budget is spent the countdown below carries the number, so the hint
+  // does not repeat a second, instantly stale copy of it.
   el.innerHTML = `<h2>Audit could not run</h2>
     <p><b>${esc(seed.name)}</b> — ${esc(data.error || data.refusal_detail || "no report returned")}</p>
-    ${hint ? `<p style="margin-top:8px">${esc(hint + again)}</p>` : ""}
-    <div class="facts"><div class="fact"><div class="k">mode</div><div class="v">${esc(data.mode || MODE)}</div></div>
+    ${hint ? `<p style="margin-top:8px">${esc(hint)}</p>` : ""}
+    ${timed ? `<p class="count" style="margin-top:8px"></p>` : ""}
+    <div class="facts"><div class="fact"><div class="k">mode</div><div class="v">${esc(mode)}</div></div>
       <div class="fact"><div class="k">http status</div><div class="v">${esc(status || "—")}</div></div>
-      ${data.limit ? `<div class="fact"><div class="k">budget</div><div class="v">${esc(data.limit.per_minute + "/min, burst " + data.limit.burst)}</div></div>` : ""}</div>`;
+      ${data.limit ? `<div class="fact"><div class="k">${esc(mode)} budget</div><div class="v">${esc(data.limit.per_minute + "/min, burst " + data.limit.burst)}</div></div>` : ""}
+      ${data.limit ? `<div class="fact"><div class="k">spends Qloo quota</div><div class="v">${esc(data.limit.spends_quota ? "yes, three requests" : "no, local read")}</div></div>` : ""}</div>`;
+  if(timed) countdown(el.querySelector(".count"), wait, mode);
   return el;
 }
 

@@ -12,10 +12,13 @@ Endpoints
 
 The key is never echoed: `/api/seeds` reports only whether one is present.
 
-`/api/audit` is the only endpoint that spends anything — one live audit costs
-three Qloo calls — so it carries the in-memory limits in `second_opinion.
-throttle`: a per-client token bucket, a cap on audits in flight, and a bound on
-the seed string. Everything else is static or hand-authored and stays free.
+`/api/audit` is the only endpoint that can spend anything, and a live audit costs
+three Qloo calls. It therefore carries the in-memory limits in
+`second_opinion.throttle`: a per-client token bucket, a cap on audits in flight,
+and a bound on the seed string. Those limits are separate per mode — fixture
+audits read local files and spend no quota, so they draw on their own larger
+budget instead of the quota guard. Everything else is static or hand-authored and
+stays free.
 """
 
 from __future__ import annotations
@@ -34,7 +37,13 @@ from .audit import rules_payload
 from .catalog import seed_list
 from .config import DEFAULT_CONFIG, AuditConfig
 from .env import load_env_file
-from .throttle import MAX_SEED_LENGTH, default_throttle, rightmost_forwarded_client
+from .throttle import (
+    MAX_SEED_LENGTH,
+    MODES,
+    active_throttles,
+    rightmost_forwarded_client,
+    throttle_for_mode,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
@@ -47,8 +56,6 @@ CONTENT_TYPES = {
     ".json": "application/json",
 }
 
-
-MODES = ("live", "fixture")
 
 # Characters of an access-log line kept before truncation. Long enough to hold a
 # whole request target for a real artist name, short enough that a hostile URL
@@ -75,6 +82,18 @@ def _redact_credential(body: bytes) -> bytes:
     if len(key) < 4:
         return body
     return body.replace(key.encode("utf-8", "ignore"), REDACTED)
+
+
+def _rate_limit_reason(mode: str) -> str:
+    """Why a refusal happened, in terms of what that mode actually costs.
+
+    Telling a fixture-mode visitor that their "Qloo quota" is spent is both wrong
+    and confusing: a local read spent nothing. The reader should learn which
+    budget ran out and that the other one is untouched.
+    """
+    if mode == "fixture":
+        return "fixture audit budget reached; try again shortly (no Qloo request is made in fixture mode)"
+    return "live audit rate limit reached; try again later"
 
 
 def _adapter(mode: str):
@@ -213,8 +232,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": "invalid threshold or min_corroborated"}, 400)
 
         # Every limit is checked before the adapter is constructed, so a refused
-        # request costs no Qloo call at all.
-        limits = default_throttle()
+        # request costs nothing at all. The budget is chosen by mode: only a live
+        # audit spends Qloo quota, so a fixture audit draws on a separate, larger
+        # bucket and can never empty the quota guard.
+        limits = throttle_for_mode(mode)
         allowed, retry_after = limits.budget(self._client_scope())
         if not allowed:
             wait = max(1, int(round(retry_after)))
@@ -222,7 +243,8 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": False,
                     "code": "rate_limited",
-                    "error": "audit rate limit reached; try again later",
+                    "mode": mode,
+                    "error": _rate_limit_reason(mode),
                     "retry_after_seconds": wait,
                     "limit": limits.as_dict(),
                 },
@@ -235,6 +257,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": False,
                     "code": "audit_busy",
+                    "mode": mode,
                     "error": "too many audits are running right now; try again shortly",
                     "retry_after_seconds": 2,
                     "limit": limits.as_dict(),
@@ -268,13 +291,21 @@ def serve(host="0.0.0.0", port=8000):
     httpd = ThreadingHTTPServer((host, port), Handler)
     mode = server_mode()
     env = describe_environment()
-    limits = default_throttle().as_dict()
+    budgets = {mode: throttle.as_dict() for mode, throttle in active_throttles().items()}
+    live = budgets["live"]
+    fixture = budgets["fixture"]
     ready = "key present" if env["live_ready"] else "no QLOO_API_KEY: audits will refuse"
     print(f"Second Opinion listening on http://{host}:{port}  (mode={mode}, {ready})", flush=True)
     print(
-        f"audit limits: {limits['per_minute']}/minute per client, "
-        f"burst {limits['burst']}, {limits['concurrent']} in flight "
-        f"({limits['storage']}, reset on restart)",
+        f"live audit limits:    {live['per_minute']}/minute per client, "
+        f"burst {live['burst']}, {live['concurrent']} in flight "
+        f"— three Qloo requests each ({live['storage']}, reset on restart)",
+        flush=True,
+    )
+    print(
+        f"fixture audit limits: {fixture['per_minute']}/minute per client, "
+        f"burst {fixture['burst']}, {fixture['concurrent']} in flight "
+        f"— local reads, no Qloo request ({fixture['storage']}, reset on restart)",
         flush=True,
     )
     try:
