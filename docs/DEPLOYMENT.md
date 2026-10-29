@@ -1,11 +1,12 @@
 # Deployment notes
 
-Status: **not deployed.** No public URL exists, no hosting account or credential
-was used for this clean-copy preparation, and no push or deployment was
-performed.
+Status: **not deployed — no public demo URL exists.** No GitHub repository was
+created from this copy, nothing was pushed, and no hosting provider was contacted.
+This file records what has been verified locally and the exact steps an operator
+performs.
 
 The application defaults to live mode and its seed list is hand-authored, so a
-deployment target with a runtime `QLOO_API_KEY` can run without captured Qloo
+deployment target with a runtime `QLOO_API_KEY` can run without any captured Qloo
 response files.
 
 ## Application profile
@@ -27,10 +28,10 @@ handler.
 | Variable | Required | Default | Notes |
 | --- | --- | --- | --- |
 | `QLOO_API_KEY` | yes, for a working live demo | none | Secret. Set it in the platform's secret store, never in the image, repo, logs or frontend. The server reports only whether a key is present. |
-| `QLOO_API_HOST` | no | `https://hackathon.api.qloo.com` | Hackathon keys are documented to work against this host. |
+| `QLOO_API_HOST` | no | `https://hackathon.api.qloo.com` | Set it to whichever host your credential was issued for; the client reads this variable and no other endpoint is assumed. |
 | `SO_MODE` | no | `live` | `live` calls Qloo. `fixture` reads local captures and is for development only. There is no automatic fallback: with `live` and no key, audits return `503`. |
-| `PORT` | no | `8000` | Most platforms inject this. |
-| `HOST` | no | `0.0.0.0` | Keep the default in containers. |
+| `PORT` | no | `8000` | Injected by the platform. Render's default is `10000`; the server binds whatever `PORT` says (verified in-container), so no code change is needed. |
+| `HOST` | no | `0.0.0.0` | Keep the default in containers; binding `127.0.0.1` makes the service unreachable from outside. |
 
 A directly launched `python3 -m second_opinion.server` (or `.cli`) also reads
 the project-root `.env` through `second_opinion/env.py`. Real environment
@@ -52,12 +53,19 @@ recommendation set.
 The clean copy was verified without a real API key and without captured
 fixtures:
 
-| Request | Observed |
+Verified on 2026-10-29 in this publication copy, with `QLOO_API_KEY` unset and no
+captured responses present:
+
+| Check | Observed |
 | --- | --- |
+| `python3 -m unittest discover -s tests -t .` | 142 tests, OK, 57 skipped (missing captured responses), exit 0 |
 | `GET /api/health` | `200 {"ok": true}` |
 | `GET /api/seeds` | `200`, `mode: "live"`, `live_ready: false`, 8 static seeds |
+| `GET /` | `200`, `text/html`, the single-page frontend |
 | `GET /api/audit?seed=Laufey` | `503`, error names `QLOO_API_KEY` |
 | `GET /api/audit?seed=Laufey&mode=live` | `503`, no fixture fallback |
+| `docker build` | succeeds; `/app` contains only `second_opinion/` and `web/`, no `.env`, no data files, runs as uid 10001 |
+| `docker run -e PORT=10000` | the app answers `/api/health`, `/api/seeds` and `/` on 10000 and still returns `503` for a live audit with no key |
 
 A real-key live audit was verified in the separate local development workspace,
 but its detailed Qloo-derived results are not included in this clean copy until
@@ -75,15 +83,40 @@ docker run --rm -p 8000:8000 --env-file .env second-opinion
 ```
 
 or, on a platform with secret storage, set `QLOO_API_KEY` as a runtime secret.
-Never bake the key into the image or pass it as a build argument.
+Never bake the key into the image or pass it as a build argument, and prefer the
+platform's environment/secrets UI over a shell argument so the value does not land
+in shell history.
+
+`--env-file` in the example above reads a local untracked `.env`; it is a local
+convenience only. In a container or on a host, the key comes from the platform.
+
+### Free-tier container host: what to set (Render as the example)
+
+Verified against Render's documentation while preparing this copy; **no account was
+created and nothing was deployed.**
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| Source | the published repository, build with the included `Dockerfile` | Render builds Dockerfiles for web services; no build command to invent. |
+| Runtime port | the platform's `PORT`; Render's default is `10000` | `server.py` reads `PORT` at startup. Confirmed in a local container: with `PORT=10000` the app answered on 10000. |
+| Bind address | `HOST` default `0.0.0.0` | Already the image default. |
+| Health check path | `/api/health` | Returns `200 {"ok": true}` with no key and no data, which is what a platform probe needs. |
+| Environment | `QLOO_API_KEY` as a **secret** in the service's Environment Variables section (Advanced, or Settings after creation) | Values are read from the environment only; nothing is committed. `SO_MODE` can be left unset — live is the default. |
+| Expect on free | idle instances spin down after roughly 15 minutes without traffic, and the first request after that waits for a cold start | Render documents free-tier spin-down; a cold start plus a live Qloo call is the slowest path in the demo. |
+
+Not verified here, and the operator should check the current plan pages before
+relying on it: free-tier RAM/CPU, monthly hours, bandwidth limits, and whether
+free web services are still offered in your region. None of them change the
+configuration above.
 
 ## Minimum steps to a public demo
 
-1. Create a service from the published repository using the included
-   `Dockerfile`, or any host that runs a long-lived process with a `PORT`.
-2. Set `QLOO_API_KEY` as a runtime secret.
-3. Configure the health check as `GET /api/health`.
-4. Expose the platform's `PORT`.
+1. Publish this branch to the GitHub repository, then create a web service from it
+   using the included `Dockerfile` (or any host that runs a long-lived process with
+   a `PORT`).
+2. Set `QLOO_API_KEY` as a runtime secret in the platform's environment settings.
+3. Configure the health check path as `/api/health`.
+4. Let the platform assign the port; the app binds `$PORT`.
 5. Confirm from outside: `GET /api/seeds` returns 8 seeds with
    `"live_ready": true`, then `GET /api/audit?seed=Laufey&mode=live` returns
    `ok: true`.
@@ -96,15 +129,20 @@ preparation, so no deployment claim is made.
 
 ## Remaining deployment blockers
 
-- No GitHub repository or hosting service has been created from this copy.
-- No push, deployment, or public URL has been performed.
-- A real-key live audit still needs operator review of the Qloo-derived outputs
-  before publishing them in documentation.
+- No GitHub repository or hosting service has been created from this copy, and no
+  push has been performed; the operator must authorize and run those steps.
+- No public demo URL exists.
+- This copy has never been run with a real credential: its live path is exercised
+  against stubs and its no-key behavior is verified, so a hosted `ok: true` audit
+  is still an untested claim for this tree.
+- Qloo-derived outputs from a credentialed run (per-pair states, affinities,
+  calibration numbers) stay out of the documentation until the applicable terms
+  are reviewed.
 
-## Why fixtures and reports are not shipped
+## What this copy excludes, and why
 
-Captured Qloo responses, derived reports, stale clean-checkout exports, entity
-IDs, and detailed live audit outputs are excluded from this copy. Their
-redistribution permission has not been confirmed. The conservative publication
-rule used here is: ship the application code and tests with synthetic identifiers,
-not saved API responses or derived analyses.
+No captured Qloo API responses, no API-returned entity identifiers, no affinity
+values or per-pair results, and no derived reports are shipped here. Permission to
+redistribute that material has not been confirmed, so the publication rule applied
+is: ship the code that *calls* the API, not what the API *returned*. Tests that
+need captured responses skip with a stated reason instead of failing.

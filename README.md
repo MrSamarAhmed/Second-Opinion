@@ -148,14 +148,20 @@ Verified suite:
 
 | Environment | Result |
 | --- | --- |
-| Full local development workspace | 142 tests OK, 0 skips, exit code 0 |
-| Clean publication copy without `data/`, `.env`, or captured fixtures | 142 tests OK, 57 skipped, exit code 0 |
+| Full local development workspace, with the captured responses present | 142 tests OK, 0 skips, exit code 0 |
+| Clean publication copy without `data/`, `.env`, or captured responses | 142 tests OK, 57 skipped, exit code 0 |
 
-The 57 skips are all fixture-dependent tests. Their reason is:
+The 57 skips are the fixture-dependent tests: they compare real payloads field by
+field, and the payloads they read are Qloo API responses that stay private and are
+not published with this repository. A public checkout therefore runs 85 tests and
+skips those 57 with the reason
 
 ```text
 captured Qloo fixtures are not present in this checkout
 ```
+
+The skips are a missing-input condition, not a failure: the same 142 tests run
+with 0 skips wherever the captured responses are available.
 
 Coverage includes receipt re-derivation, fabricated shared terms, normalization,
 duplicate collapse, audit states and boundaries, live adapter error mapping,
@@ -164,9 +170,12 @@ mode handling, `.env` loader precedence, and clean-checkout HTTP routes.
 
 ## Deployment
 
-**Not deployed.** No public URL exists from this clean-copy preparation. The
-included `Dockerfile` is intended to be used by a container host with a runtime
-secret. The exact steps are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+**Not deployed — no public demo URL exists.** Nothing from this copy has been
+pushed to a hosting provider and no live instance is running. The `Dockerfile`
+builds a code-only image that runs locally; a public live demo additionally needs
+a container host and `QLOO_API_KEY` set in that host's environment settings, never
+in the image. Build and start configuration, port handling and the exact dashboard
+steps are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Repository layout
 
@@ -183,16 +192,22 @@ LICENSE             MIT license
 
 ## Qloo data-use note
 
-Captured Qloo responses, local reports, stale clean-checkout exports, entity
-IDs, and detailed live audit outputs are intentionally absent from this
-publication copy.
+This repository ships application code, tests, documentation and the frontend
+only. It contains no captured Qloo API responses, no entity identifiers returned
+by the API, no affinity values or per-pair results, and no audit output from a
+credentialed run; tests address entities through synthetic placeholder ids.
 
-Some tests use synthetic entity IDs instead of API-returned identifiers. The
-hand-authored artist names are search inputs, not published entity IDs. However,
-Qloo's binding API terms and data-retention terms should be reviewed before
-publishing any API response content, derived metrics, saved fixtures, or
-entity-specific analyses. This repository copy does not assert that
-redistribution permission has been established.
+What is documented here is the interface, not the data: the request parameters,
+the response field names the auditor reads, and the rules the auditor applies to
+them. The seed names in `second_opinion/catalog.py` are hand-written artist
+search queries, not published Qloo entities.
+
+Permission to redistribute Qloo response data has **not** been established, and
+nothing in this repository claims otherwise: the terms that would settle it could
+not be verified from the public documentation available when this copy was
+prepared. The conservative rule applied here is therefore — publish code that
+*calls* the API, keep anything the API *returned* out of the repository. Whoever
+runs this with their own key is responsible for the terms attached to it.
 
 ## Limitations
 
