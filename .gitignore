@@ -1,0 +1,22 @@
+# Captured Qloo API responses stay local and out of the public repository.
+data/
+
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv/
+*.log
+
+# Credentials never enter the repository.
+.env
+.env.*
+!.env.example
+
+# Local clean-checkout scratch space, kept on disk but never published.
+.clean_check/
+
+# Qloo-derived reports withheld from the public tree until their
+# redistribution status is settled. Local copies are preserved.
+/citytaste/analysis_output.txt
+/VALIDATION_REPORT.md
+/RESELECTION_REPORT.md

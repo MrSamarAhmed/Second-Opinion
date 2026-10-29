@@ -1,0 +1,14 @@
+data/
+tests/
+scripts/
+citytaste/
+.git/
+.clean_check/
+__pycache__/
+*.py[cod]
+*.md
+
+# Local credentials must never travel in a build context to any builder.
+# The image is code-only; the key is supplied at runtime by the platform.
+.env
+.env.*
