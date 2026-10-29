@@ -389,6 +389,37 @@ class TestVerdictChanges(unittest.TestCase):
         self.assertEqual(sorted(outcome["newly_comparable"]), ["audience", "style"])
         self.assertIn("verdict unchanged", report["investigation"]["decision"])
 
+    def test_the_decision_sentence_says_nothing_about_a_gap_that_is_not_there(self):
+        """Regression: an empty `remaining_gaps` used to render a subjectless clause.
+
+        The sentence was built by joining the surviving gaps unconditionally, so when
+        the re-read closed every one-sided gap it read `"...comparable, but  still
+        holds nothing..."` — a double space where a dimension name should be. Only
+        the wording is at stake here; the verdict arithmetic is covered by the test
+        above.
+        """
+        report = run(
+            ScriptedAdapter(candidates=[(THIN_LIST, 0.80)], direct={"t-thin": THIN_DIRECT_DISJOINT})
+        )
+        investigation = report["investigation"]
+        self.assertEqual(investigation["outcome"]["remaining_gaps"], [])
+        self.assertEqual(investigation["outcome"]["direction"], "held")
+        decision = investigation["decision"]
+        self.assertNotIn("  ", decision, "no double space from an empty join")
+        self.assertNotIn("but  ", decision)
+        self.assertNotIn("holds nothing", decision, "no gap may be described as still empty")
+        self.assertIn("left no one-sided gap behind", decision)
+        self.assertIn("verdict unchanged at AFFINITY_ONLY", decision)
+        self.assertIn("audience, style comparable", decision)
+        self.assertTrue(decision.endswith("conservative direction"))
+
+        # And the sibling branch must still name what is missing, so the fix cannot
+        # have traded one wrong sentence for a vague one.
+        held = run(SyntheticAdapter("confirms"), DEMO_SEED)["investigation"]
+        self.assertEqual(held["outcome"]["remaining_gaps"], ["style"])
+        self.assertIn("but style still holds nothing on the candidate's side", held["decision"])
+        self.assertNotIn("  ", held["decision"])
+
     def test_a_re_read_can_carry_less_and_the_verdict_moves_down(self):
         """The third honest outcome: a direct record that supports less than the list copy."""
         adapter = ScriptedAdapter(

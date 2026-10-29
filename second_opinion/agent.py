@@ -469,12 +469,20 @@ class SecondOpinionAgent:
 
         if revised.state == before:
             if newly_comparable:
-                decision = (
-                    f"verdict unchanged at {before}: the direct record made "
-                    f"{', '.join(newly_comparable)} comparable, but {', '.join(new_gaps)} still "
-                    "holds nothing on the candidate's side and the state rule is not met, so the "
-                    "doubt is settled in the conservative direction"
-                )
+                if new_gaps:
+                    decision = (
+                        f"verdict unchanged at {before}: the direct record made "
+                        f"{', '.join(newly_comparable)} comparable, but {', '.join(new_gaps)} still "
+                        "holds nothing on the candidate's side and the state rule is not met, so the "
+                        "doubt is settled in the conservative direction"
+                    )
+                else:
+                    decision = (
+                        f"verdict unchanged at {before}: the direct record made "
+                        f"{', '.join(newly_comparable)} comparable and left no one-sided gap behind, "
+                        "but the state rule is still not met, so the doubt is settled in the "
+                        "conservative direction"
+                    )
             else:
                 decision = (
                     f"verdict unchanged at {before}: the direct record is just as empty in "
