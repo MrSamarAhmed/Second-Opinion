@@ -403,12 +403,17 @@ function errorCard(data, seed, status){
     "authentication failed": "Qloo rejected the credential the server is using.",
     "upstream timeout": "The request to Qloo timed out. Try the seed again.",
     "no results": "Qloo's artist search returned no match for this name.",
-  }[data.refusal_code] || "";
+    "rate_limited": "This client's audit budget is spent. /api/audit costs three Qloo requests, so the server limits it to protect the operator's quota.",
+    "audit_busy": "Every audit slot on this instance is busy with another request.",
+  }[data.refusal_code || data.code] || "";
+  const wait = Number(data.retry_after_seconds);
+  const again = (Number.isFinite(wait) && wait > 0) ? ` Try again in about ${Math.round(wait)} seconds.` : "";
   el.innerHTML = `<h2>Audit could not run</h2>
     <p><b>${esc(seed.name)}</b> — ${esc(data.error || data.refusal_detail || "no report returned")}</p>
-    ${hint ? `<p style="margin-top:8px">${esc(hint)}</p>` : ""}
+    ${hint ? `<p style="margin-top:8px">${esc(hint + again)}</p>` : ""}
     <div class="facts"><div class="fact"><div class="k">mode</div><div class="v">${esc(data.mode || MODE)}</div></div>
-      <div class="fact"><div class="k">http status</div><div class="v">${esc(status || "—")}</div></div></div>`;
+      <div class="fact"><div class="k">http status</div><div class="v">${esc(status || "—")}</div></div>
+      ${data.limit ? `<div class="fact"><div class="k">budget</div><div class="v">${esc(data.limit.per_minute + "/min, burst " + data.limit.burst)}</div></div>` : ""}</div>`;
   return el;
 }
 

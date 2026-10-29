@@ -88,6 +88,43 @@ The seed record is fetched by `filter.results.entities` and checked against the
 resolved entity ID. This is necessary because `signal.interests.entities`
 returns recommendations, not the seed itself.
 
+## Audit endpoint limits
+
+One live audit costs **three Qloo requests** — search, seed record, candidate
+set — and the endpoint is open to any visitor. Without a bound, a single page
+left refreshing in a loop spends the operator's quota. So `/api/audit` carries
+two in-process limits from `second_opinion/throttle.py`, and every check runs
+*before* the API client is built, which means a refused request costs nothing:
+
+| Limit | Default | What it does |
+| --- | --- | --- |
+| Per-client token bucket | 6 audits/minute, burst 3 | Past the burst, the response is `429` with `Retry-After` and a JSON body explaining the budget. |
+| Audits in flight | 2 | One per client is not enough: this caps simultaneous upstream calls at roughly `2 × 3` so a few slow Qloo responses cannot pile threads onto a small instance. Busy responses are `503` with `Retry-After: 2`. |
+| Seed length | 120 characters | Longer input is `400` and never reaches Qloo. Real artist names are far shorter; this only bounds what one request can put on the wire. |
+
+`/api/seeds`, `/api/rules`, `/api/health` and the page itself are
+hand-authored or static, cost nothing, and are deliberately not throttled — a
+judge can reload them freely. The CLI is a single-user local tool and is not
+throttled either. A refused audit is not a dead end in the interface: the page
+shows the status, the budget in force and the wait before the next one is
+accepted, rather than a spinner that never finishes.
+
+Defaults are settable without touching code, through `SO_AUDIT_PER_MINUTE`,
+`SO_AUDIT_BURST` and `SO_MAX_CONCURRENT_AUDITS`; a missing, non-numeric or
+zero/negative value keeps the default, and an oversized value is clamped
+(a burst above the steady rate is reduced to it, so the limit cannot be
+switched off by configuration).
+
+Three limitations are stated plainly because they matter for a hosted demo:
+the buckets are **in memory**, so a restart, a redeploy or an idle spin-down
+hands every client a fresh burst; they are **per instance**, so more instances
+multiply the allowance; and the client is identified by the **rightmost** entry
+of `X-Forwarded-For`, because that entry alone is the proxy's own record —
+anything to its left is text the visitor typed. A proxy that replaces the header
+and a proxy that appends to it both put the real client last, so the last entry
+is right under either behavior. No IP is stored: buckets are keyed by a
+truncated digest.
+
 ## Failure behavior
 
 | Condition | Behavior |
@@ -99,6 +136,18 @@ returns recommendations, not the seed itself.
 | No search match | refusal code `seed resolution failed` |
 | Seed has no usable scored metadata | refusal code `insufficient seed metadata` |
 | Receipt cannot be re-derived | candidate state becomes `UNVERIFIABLE` and the audit is void for that candidate |
+| Seed longer than 120 characters, or blank, or an unknown `mode`, or a non-numeric threshold | HTTP 400, no Qloo request, no limit token spent |
+| Per-client budget exhausted | HTTP 429 with `Retry-After`; nothing is sent to Qloo |
+| Too many audits in flight | HTTP 503 with `Retry-After: 2`; nothing is sent to Qloo |
+| An unexpected error inside the audit path | HTTP 500 `internal audit error`; the traceback goes to the server log, never to the client |
+
+Every JSON response is scanned once for the credential value before it is
+written. Adapter messages are built from text that never includes the key, so
+the scan should never fire; it is the net under that guarantee rather than a
+substitute for it. An error response carries a code and a short message, not an
+upstream body. The key itself travels only in the `X-Api-Key` header, so it can
+never appear in a URL or in an access log — those lines are additionally capped
+at 300 characters, because the request target is client text.
 
 ## Method
 
@@ -146,29 +195,33 @@ hiding it. This rule is retained even when live results look favorable.
 python3 -m unittest discover -s tests -t .
 ```
 
-Verified suite:
+Verified suite, both runs with `QLOO_API_KEY` and `SO_MODE` unset:
 
-| Environment | Result |
+| Input present | Result |
 | --- | --- |
-| Full local development workspace, with the captured responses present | 142 tests OK, 0 skips, exit code 0 |
-| Clean publication copy without `data/`, `.env`, or captured responses | 142 tests OK, 57 skipped, exit code 0 |
+| Clean publication copy — no `data/`, no `.env`, no captured responses | 192 tests: 135 passed, 0 failed, 0 errors, 57 skipped, exit code 0 |
+| The same copy with a local `data/fixtures/` directory temporarily available | 192 tests OK, 0 skips, exit code 0 |
 
 The 57 skips are the fixture-dependent tests: they compare real payloads field by
 field, and the payloads they read are Qloo API responses that stay private and are
-not published with this repository. A public checkout therefore runs 85 tests and
+not published with this repository. A public checkout therefore runs 135 tests and
 skips those 57 with the reason
 
 ```text
 captured Qloo fixtures are not present in this checkout
 ```
 
-The skips are a missing-input condition, not a failure: the same 142 tests run
+The skips are a missing-input condition, not a failure: the same 192 tests run
 with 0 skips wherever the captured responses are available.
 
 Coverage includes receipt re-derivation, fabricated shared terms, normalization,
 duplicate collapse, audit states and boundaries, live adapter error mapping,
 key-header behavior, secret non-disclosure, static seed catalogue behavior,
-mode handling, `.env` loader precedence, and clean-checkout HTTP routes.
+mode handling, `.env` loader precedence, clean-checkout HTTP routes, and the audit
+throttle: bucket arithmetic and refill under an injected clock, per-client
+isolation, the `X-Forwarded-For` rule that ignores client-supplied prefixes,
+refused requests making zero upstream calls, the in-flight gate, `Retry-After`,
+oversized-input rejection, and the redaction scan over error and refusal bodies.
 
 ## Deployment
 
@@ -183,7 +236,8 @@ steps are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ```text
 second_opinion/     product code: config, normalization, extraction, audit,
-                    agent, adapters, CLI, environment loader, HTTP server
+                    agent, adapters, CLI, environment loader, audit throttle,
+                    HTTP server
 web/index.html      single-page interface, no build step
 tests/              test suite above
 docs/DEPLOYMENT.md  hosting and verification notes
@@ -221,6 +275,13 @@ runs this with their own key is responsible for the terms attached to it.
   recompute or reinterpret them.
 - A live audit depends on an operator-provided `QLOO_API_KEY` and on the current
   Qloo API behavior.
+- One live audit costs three Qloo requests, so a hosted demo spends the
+  operator's quota on other people's clicks. The audit budget is what bounds
+  that, not what authorizes it.
+- The audit budget is in-memory, per-instance state: a restart, a redeploy or a
+  free-tier idle spin-down refills every bucket, and running two instances
+  doubles the allowance. It is a quota guard, not access control — the demo has
+  no sign-in, so anyone within budget can run an audit.
 - The clean-copy audit verifies local no-key behavior, not a hosted deployment.
 
 ## License

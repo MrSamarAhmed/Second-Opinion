@@ -19,6 +19,7 @@ from second_opinion.adapters import (
 )
 from second_opinion.catalog import SEED_CATALOG
 from second_opinion.server import Handler
+from second_opinion.throttle import AuditThrottle, set_default_throttle
 
 from .helpers import needs_captured
 
@@ -54,6 +55,13 @@ class ServerTestCase(unittest.TestCase):
         cls.httpd.shutdown()
         cls.httpd.server_close()
         cls.thread.join(timeout=5)
+
+    def setUp(self):
+        # These tests assert routing, payloads and status codes, not the limiter.
+        # A generous budget keeps them independent of how many audits a method
+        # makes; the limit itself is covered in test_rate_limit.py.
+        set_default_throttle(AuditThrottle(per_minute=1000, burst=1000, concurrent=8))
+        self.addCleanup(set_default_throttle, None)
 
     def json_get(self, path):
         status, headers, body = _get(self.port, path)
@@ -134,6 +142,7 @@ class TestBasicRoutes(ServerTestCase):
 
 class TestLiveModeWithoutCredentials(ServerTestCase):
     def setUp(self):
+        super().setUp()
         patcher = mock.patch.dict(os.environ, {}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
