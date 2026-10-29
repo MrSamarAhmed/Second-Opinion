@@ -195,6 +195,12 @@ let ACTIVE = null;
 let MODE = "live";
 let LIVE_READY = false;
 let RETRY_TIMER = null;
+// Two audits can be in flight at once (the server allows it), and a live audit
+// takes as long as Qloo takes, so responses can arrive out of order. Each click
+// takes a new number; a response is only rendered while its number is still the
+// newest. Without this, a slow earlier audit overwrites the seed the visitor last
+// chose and the panel disagrees with the highlighted seed.
+let REQUEST_SEQ = 0;
 
 // The 429 card counts down so the reader knows when to click again. It only ever
 // writes text: it must not re-send the audit, or a rate limit would turn itself
@@ -270,6 +276,7 @@ function renderSeeds(seeds){
 
 async function selectSeed(seed){
   stopCountdown();
+  const ticket = ++REQUEST_SEQ;
   ACTIVE = seed;
   document.querySelectorAll(".seed").forEach(el => el.classList.toggle("active", el.dataset.id === seed.name));
   $("#stage").innerHTML = `<div class="skeleton">resolving seed and running the agent…</div>`;
@@ -278,8 +285,12 @@ async function selectSeed(seed){
     const q = new URLSearchParams({seed: seed.name, mode: MODE});
     const res = await fetch(`/api/audit?${q.toString()}`);
     const data = await res.json();
+    // A newer click already owns the panel: rendering this response would show a
+    // seed the visitor did not last choose.
+    if(ticket !== REQUEST_SEQ){ return; }
     render(data, seed, res.status);
   }catch(e){
+    if(ticket !== REQUEST_SEQ){ return; }
     $("#stage").innerHTML = `<div class="err">Audit request failed: ${esc(e.message)}</div>`;
   }
 }

@@ -111,6 +111,31 @@ class TestCleanCheckoutServer(unittest.TestCase):
         self.assertIn("Second Opinion", text)
         self.assertNotIn("data/fixtures", text)
 
+    def test_fixture_mode_without_data_refuses_without_leaking_a_path(self):
+        # This checkout ships no `data/`, so every fixture request meets the
+        # adapter's "no data" failure. It must stay a fixture failure — honest,
+        # mode-labelled, and free of the absolute path the server runs from.
+        status, body = _get(self.port, "/api/audit?seed=Laufey&mode=fixture")
+        self.assertEqual(status, 503)
+        payload = json.loads(body)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["mode"], "fixture")
+        error = payload["error"]
+        self.assertIn("fixture", error)
+        for path in (str(self.root), str(ROOT), str(Path.home())):
+            self.assertNotIn(path, error, error)
+
+    def test_a_fixture_failure_costs_the_live_budget_nothing(self):
+        # The live bucket is the only one that protects quota, so a local fixture
+        # refusal must not nibble at it: the live audit afterwards still fails for
+        # the real reason (no credential), never as a rate limit.
+        _get(self.port, "/api/audit?seed=Laufey&mode=fixture")
+        status, body = _get(self.port, "/api/audit?seed=Laufey&mode=live")
+        payload = json.loads(body)
+        self.assertEqual(status, 503)
+        self.assertIn("QLOO_API_KEY", payload["error"])
+        self.assertNotEqual(payload.get("code"), "rate_limited")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -59,29 +59,36 @@ recommendation set.
 
 ## Local no-key verification
 
-Verified on 2026-10-29 in this publication copy, with `QLOO_API_KEY` unset and no
-captured responses present:
+Verified on 2026-10-29 in this publication copy. Every row below runs with no
+captured responses present and, unless the row says otherwise, with
+`QLOO_API_KEY` unset; the browser rows and the probe sweep answer from synthetic
+payloads written by the harness, not from Qloo.
 
 | Check | Observed |
 | --- | --- |
-| `python3 -m unittest discover -s tests -t .` | 219 tests: 162 passed, 0 failed, 0 errors, 57 skipped (missing captured responses), exit 0 |
-| Same suite with `data/fixtures/` temporarily made available | 219 tests OK, 0 skips — neither audit budget interferes with fixture audits |
+| `python3 -m unittest discover -s tests -t .` | 224 tests: 167 passed, 0 failed, 0 errors, 57 skipped (missing captured responses), exit 0 |
+| Same suite with `data/fixtures/` temporarily made available | 224 tests OK, 0 skips — neither audit budget interferes with fixture audits |
 | `GET /api/health` | `200 {"ok": true}` |
 | `GET /api/seeds` | `200`, `mode: "live"`, `live_ready: false`, 8 static seeds |
 | `GET /` | `200`, `text/html`, the single-page frontend |
 | `GET /api/audit?seed=Laufey` | `503`, error names `QLOO_API_KEY` |
 | `GET /api/audit?seed=Laufey&mode=live` | `503`, no fixture fallback |
 | Four live audits from one client with `SO_AUDIT_PER_MINUTE=2 SO_AUDIT_BURST=2 SO_MAX_CONCURRENT_AUDITS=1` | `503`, `503` (no key), then `429` twice with `Retry-After: 30`, `error: "live audit rate limit reached; try again later"` and a `limit` block naming `mode: "live"` and `spends_quota: true` |
-| A **fixture** audit from the same client whose live budget is spent | `503`, `{"ok": false, "error": "fixture directories not found under …/data/fixtures", "mode": "fixture"}` — never `429`, so the live guard cannot starve local reads |
+| A **fixture** audit from the same client whose live budget is spent | `503`, `{"ok": false, "error": "no fixture data: a fixture audit needs a search/ and a pair/ directory inside the fixture root (default: data/fixtures)", "mode": "fixture"}` — never `429`, so the live guard cannot starve local reads. The message names what is missing, not the absolute directory the server runs from |
 | A live audit from a different `X-Forwarded-For` while the first client is rate-limited | `503` (no key), not `429` — the bucket is per client, not global |
 | Ten `GET /api/seeds` while the audit budget is exhausted | all `200` — only the endpoint that spends quota is limited |
 | `GET /api/audit` with a 200-character seed, three times | `400`, `seed is too long; the limit is 120 characters` — and the two valid audits right after it still returned `503` (no key) with the third returning `429`, so a rejected request spent no budget at all |
-| Container run with `PORT=10000 SO_AUDIT_PER_MINUTE=2 SO_AUDIT_BURST=2` | inside the image, for one client: `503`, `503`, then `429` twice with `Retry-After: 30` and `code: "rate_limited"`; a 200-character seed returns `400`; `/api/seeds` keeps answering `200`; and a `mode=fixture` audit from that same rate-limited client returns `503 {"ok": false, "error": "fixture directories not found under /app/data/fixtures", "mode": "fixture"}` — not `429` |
+| Container run with `PORT=10000 SO_AUDIT_PER_MINUTE=2 SO_AUDIT_BURST=2` | inside the image, for one client: `503`, `503`, then `429` twice with `Retry-After: 30` and `code: "rate_limited"`; a 200-character seed returns `400`; `/api/seeds` keeps answering `200`; and a `mode=fixture` audit from that same rate-limited client returns `503 {"ok": false, "error": "no fixture data: a fixture audit needs a search/ and a pair/ directory inside the fixture root (default: data/fixtures)", "mode": "fixture"}` — not `429`, and no container path disclosed |
 | The page in a browser, fixture mode, `SO_FIXTURE_AUDIT_PER_MINUTE=1 SO_FIXTURE_AUDIT_BURST=1` | the first seed renders a full report (candidates, receipts verified, blanket flag, agent trace); once the fixture budget is spent the next click renders "Audit could not run — Little Simz — fixture audit budget reached; try again shortly (no Qloo request is made in fixture mode)" with the facts `mode = fixture`, `http status = 429`, `fixture budget = 1/min, burst 1`, `spends Qloo quota = no, local read`, and a countdown that ticks in text ("Next fixture audit from this client accepted in about 48 seconds." → "…about 32 seconds." fifteen seconds later) while the page's request total stays constant at 3 — it never retries on a timer |
 | Server started with `SO_AUDIT_PER_MINUTE=0 SO_FIXTURE_AUDIT_PER_MINUTE=-5 SO_FIXTURE_AUDIT_BURST=999` | banner reports the live defaults `6/minute per client, burst 3, 2 in flight` and the fixture defaults `30/minute … 4 in flight`, with the oversized fixture burst clamped down to its own rate (`burst 30`) — a zero or a negative value cannot switch a budget off, and a huge one cannot switch it open |
 | Startup banner | `live audit limits: 6/minute per client, burst 3, 2 in flight — three Qloo requests each (in-memory, reset on restart)` and `fixture audit limits: 30/minute per client, burst 10, 4 in flight — local reads, no Qloo request (in-memory, reset on restart)` |
 | `docker build` | succeeds; `/app` contains only `second_opinion/` and `web/`, no `.env`, no data files, runs as uid 10001 |
 | `docker run -e PORT=10000` | the app answers `/api/health`, `/api/seeds` and `/` on 10000 and still returns `503` for a live audit with no key |
+| 80 HTTP probes against the real server with a stubbed live adapter and synthetic payloads | `200` for a well-formed audit (three upstream reads, receipts re-derived), `400` for each of 14 malformed or absent inputs before any budget is spent, `503` naming `QLOO_API_KEY` with no key, `200` refusals carrying `code` `authentication failed` / `upstream timeout` / `no results` / `upstream error` with `candidates: []` and a terminating `refuse` trace step, `502` for an unmapped adapter failure, `503 audit_busy` with `Retry-After: 2` when the in-flight gate is full, `429` with the right mode once each budget is spent, and `500 {"ok": false, "error": "internal audit error"}` for an unexpected exception while the 933-character traceback stayed on stderr |
+| Sentinel sweep over every probe response body | zero hits for a synthetic credential, `Traceback`, `'File "` and `password` — an upstream message that quoted the credential arrived as `the key was [credential redacted]` |
+| `GET /api/audit?seed=Laufey&mode=fixture` in this checkout (no `data/`) | `503 {"ok": false, "mode": "fixture", "error": "no fixture data: …"}` — the same request before the fix also carried the server's absolute working directory, which is what the added regression test now forbids |
+| The page in a browser, slow first audit then a fast second click | before the fix the panel re-rendered the earlier seed while the sidebar highlighted the later one; with the per-click ticket in place the stale response is dropped and the panel agrees with the highlighted seed, and a normal click still renders its own report and trace |
+| One deliberate live audit through this copy's server, key loaded into the process environment only | `200` after about 4.1 s, `ok: true`, `mode: live`, every candidate's receipts verified, and the body free of the credential, any traceback and any local path. The Qloo-derived content of that report is withheld from this copy, as the note below and the README's Qloo data-use note require |
 
 The refused-request counts are also asserted in `tests/test_rate_limit.py` against
 a stubbed adapter, where the stub records every call it would have made to Qloo.
@@ -89,12 +96,19 @@ a stubbed adapter, where the stub records every call it would have made to Qloo.
 produces a full report while no socket is opened and no API client is built,
 fixture traffic that leaves the live bucket and the live bucket table untouched,
 an exhausted live guard that still answers fixture requests, refusal text that
-names the right mode, and a static check that the page's only timer is the
-countdown and that the countdown sends nothing.
+names the right mode, a static check that the page's only timer is the
+countdown and that the countdown sends nothing, and — since the browser pass —
+that each click takes a fresh ticket and that both the response path and the
+failure path refuse to render a superseded audit. `tests/test_clean_checkout.py`
+additionally drives the shipped server over a copy with no `data/` and asserts
+that a fixture request in that state answers `503` in fixture mode without
+naming the directory the server runs from, and that the failure costs the live
+budget nothing.
 
-A real-key live audit was verified in the separate local development workspace,
-but its detailed Qloo-derived results are not included in this clean copy until
-the applicable Qloo data-use terms are reviewed.
+A real-key live audit has now been driven through this copy's own server, and it
+behaved as the no-key paths say it should. Its Qloo-derived results are still not
+reproduced in this clean copy; the applicable Qloo data-use terms have to be
+reviewed before per-artist output from a credentialed run is published here.
 
 ## Recommended path: the included Dockerfile
 

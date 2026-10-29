@@ -290,6 +290,21 @@ class TestRefusalIsHonest(FixtureThrottleTestCase):
         self.assertEqual(results["first"][0], 200)
 
 
+def function_body(source: str, name: str) -> str:
+    """The brace-balanced body of a top-level `function name(...)` in the page."""
+    start = source.index(f"function {name}(")
+    depth, index = 0, source.index("{", start)
+    for cursor in range(index, len(source)):
+        char = source[cursor]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[index : cursor + 1]
+    raise AssertionError(f"unbalanced body for {name}")
+
+
 class TestFrontendDoesNotRetry(unittest.TestCase):
     """The page must inform a refused visitor, not hammer the endpoint.
 
@@ -301,17 +316,7 @@ class TestFrontendDoesNotRetry(unittest.TestCase):
     source = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
 
     def _function_body(self, name: str) -> str:
-        start = self.source.index(f"function {name}(")
-        depth, index = 0, self.source.index("{", start)
-        for cursor in range(index, len(self.source)):
-            char = self.source[cursor]
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    return self.source[index : cursor + 1]
-        raise AssertionError(f"unbalanced body for {name}")
+        return function_body(self.source, name)
 
     def test_the_only_timer_in_the_page_is_the_countdown(self):
         body = self._function_body("countdown")
@@ -336,6 +341,39 @@ class TestFrontendDoesNotRetry(unittest.TestCase):
         self.assertIn("sends nothing to Qloo", self.source)
         # The quota sentence is chosen by the flag the server sends, not assumed.
         self.assertIn("data.limit.spends_quota", self.source)
+
+
+class TestFrontendIgnoresSupersededResponses(unittest.TestCase):
+    """A slow audit must not overwrite the seed the visitor clicked last.
+
+    The server allows more than one audit in flight and a live audit takes as long
+    as Qloo takes, so two quick clicks can come back in either order. Driving the
+    page showed the earlier response rendering after the later one — the panel
+    naming one seed while the sidebar highlighted another. Each click now takes a
+    ticket and a response is only rendered while its ticket is still the newest;
+    these tests pin that shape in the shipped source.
+    """
+
+    source = (Path(__file__).resolve().parent.parent / "web" / "index.html").read_text()
+
+    def test_each_click_takes_a_new_ticket(self):
+        body = function_body(self.source, "selectSeed")
+        self.assertIn("let REQUEST_SEQ = 0;", self.source)
+        self.assertIn("++REQUEST_SEQ", body)
+
+    def test_a_report_is_rendered_only_for_the_newest_click(self):
+        body = function_body(self.source, "selectSeed")
+        self.assertLess(body.index("ticket !== REQUEST_SEQ"),
+                        body.index("render(data, seed, res.status)"))
+        # The one call site that paints the panel is the guarded one.
+        self.assertEqual(self.source.count("render(data, seed, res.status)"), 1)
+
+    def test_a_late_network_error_cannot_erase_the_current_report(self):
+        body = function_body(self.source, "selectSeed")
+        self.assertEqual(body.count("ticket !== REQUEST_SEQ"), 2,
+                         "both the response path and the failure path must be guarded")
+        self.assertLess(body.rindex("ticket !== REQUEST_SEQ"),
+                        body.index("Audit request failed"))
 
 
 if __name__ == "__main__":

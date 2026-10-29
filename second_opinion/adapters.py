@@ -81,7 +81,12 @@ class FixtureAdapter:
         self.pair_dir = self.root / "pair"
         self.search_dir = self.root / "search"
         if not self.pair_dir.is_dir() or not self.search_dir.is_dir():
-            raise AdapterError(f"fixture directories not found under {self.root}")
+            # This text reaches a visitor in a 503 body, so it says what is
+            # missing without naming the directory the server happens to live in.
+            raise AdapterError(
+                "no fixture data: a fixture audit needs a search/ and a pair/ "
+                "directory inside the fixture root (default: data/fixtures)"
+            )
         self._pair_files: List[Tuple[str, dict]] = []
         self._seeds: Dict[str, dict] = {}
         self._seed_by_key: Dict[str, List[str]] = {}

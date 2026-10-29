@@ -220,19 +220,19 @@ Verified suite, both runs with `QLOO_API_KEY` and `SO_MODE` unset:
 
 | Input present | Result |
 | --- | --- |
-| Clean publication copy — no `data/`, no `.env`, no captured responses | 219 tests: 162 passed, 0 failed, 0 errors, 57 skipped, exit code 0 |
-| The same copy with a local `data/fixtures/` directory temporarily available | 219 tests OK, 0 skips, exit code 0 |
+| Clean publication copy — no `data/`, no `.env`, no captured responses | 224 tests: 167 passed, 0 failed, 0 errors, 57 skipped, exit code 0 |
+| The same copy with a local `data/fixtures/` directory temporarily available | 224 tests OK, 0 skips, exit code 0 |
 
 The 57 skips are the fixture-dependent tests: they compare real payloads field by
 field, and the payloads they read are Qloo API responses that stay private and are
-not published with this repository. A public checkout therefore runs 162 tests and
+not published with this repository. A public checkout therefore runs 167 tests and
 skips those 57 with the reason
 
 ```text
 captured Qloo fixtures are not present in this checkout
 ```
 
-The skips are a missing-input condition, not a failure: the same 219 tests run
+The skips are a missing-input condition, not a failure: the same 224 tests run
 with 0 skips wherever the captured responses are available.
 
 Coverage includes receipt re-derivation, fabricated shared terms, normalization,
@@ -249,7 +249,11 @@ produces a full report without opening a socket or building an API client,
 fixture traffic that cannot draw on the live bucket, an exhausted live guard that
 still serves fixture requests, refusal text that names the mode that actually
 ran out, and a source check that the page's only timer is the countdown and
-that the countdown never fetches.
+that the countdown never fetches. It also checks that every click takes a new
+ticket, so a slow audit cannot replace the report of the seed the visitor
+chose last. `tests/test_clean_checkout.py` drives the shipped server over a copy
+with no `data/` and no key, and asserts there that a fixture request refuses with
+`503` in fixture mode and without naming the directory the server runs from.
 
 ## Deployment
 
