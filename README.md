@@ -46,8 +46,10 @@ python3 -m second_opinion.cli audit "Bad Bunny" --json --threshold 0.30
 
 **Live mode** is the default. It calls the Qloo API using `QLOO_API_KEY`. A
 directly launched server or CLI also loads the project-root `.env`, but a real
-environment variable always takes precedence over the file value. The loader
-never prints, logs, returns, or stores credential values.
+environment variable always takes precedence over the file value. The loader never
+prints or logs a value and returns only the count of variables it set; what it
+does is copy missing entries into the process environment, which is the only place
+the API client reads the key from.
 
 ```bash
 python3 -m second_opinion.server                       # reads ./.env, http://localhost:8000
