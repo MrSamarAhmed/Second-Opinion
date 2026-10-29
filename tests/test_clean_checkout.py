@@ -137,5 +137,49 @@ class TestCleanCheckoutServer(unittest.TestCase):
         self.assertNotEqual(payload.get("code"), "rate_limited")
 
 
+    def test_the_synthetic_demo_runs_with_no_key_and_no_captures(self):
+        # The demonstration exists for exactly this checkout: no credential, no
+        # `data/`, no network — and the agent's follow-up still has to be visible.
+        status, body = _get(self.port, "/api/demo?scenario=improves")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["mode"], "synthetic")
+        self.assertEqual(payload["demo"]["entity_lookups"], 2)
+        self.assertEqual(payload["investigation"]["follow_up_queries_used"], 1)
+        self.assertIsNotNone(payload["investigation"]["gap"])
+        moved = [c for c in payload["candidates"] if c.get("investigation")]
+        self.assertEqual([c["state"] for c in moved], ["CORROBORATED"])
+        self.assertIn("invented", payload["demo"]["evidence_origin"])
+        # Nothing in this response may read as a live audit, because none is
+        # possible here: no key exists in the server's environment.
+        self.assertNotIn('"live"', body.decode("utf-8"))
+
+    def test_an_unknown_demo_scenario_is_refused(self):
+        status, body = _get(self.port, "/api/demo?scenario=whatever-a-visitor-types")
+        self.assertEqual(status, 400)
+        self.assertIn("improves or confirms", json.loads(body)["error"])
+
+    def test_the_shipped_page_offers_the_demonstrations_as_synthetic(self):
+        status, body = _get(self.port, "/")
+        self.assertEqual(status, 200)
+        text = body.decode("utf-8")
+        self.assertIn("/api/demo", text)
+        self.assertIn("Synthetic demonstration", text)
+        self.assertIn("Demonstrations", text)
+        self.assertIn("not Qloo results", text)
+
+    def test_a_demo_never_becomes_a_live_audit_for_the_budget(self):
+        # Twenty demonstrations, then the live audit still refuses for the real
+        # reason: a demo cannot spend, or appear to spend, the quota budget.
+        for _ in range(20):
+            self.assertEqual(_get(self.port, "/api/demo?scenario=confirms")[0], 200)
+        status, body = _get(self.port, "/api/audit?seed=Laufey&mode=live")
+        payload = json.loads(body)
+        self.assertEqual(status, 503)
+        self.assertNotEqual(payload.get("code"), "rate_limited")
+        self.assertIn("QLOO_API_KEY", payload["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

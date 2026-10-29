@@ -7,22 +7,27 @@ Endpoints
     GET /                     the interface
     GET /api/seeds            seed list + environment readiness
     GET /api/audit?seed=...   run the agent for one seed (throttled)
+    GET /api/demo             run the agent over invented evidence (no network, no key)
     GET /api/rules            frozen thresholds and state definitions
     GET /api/health           liveness
 
 The key is never echoed: `/api/seeds` reports only whether one is present.
 
 `/api/audit` is the only endpoint that can spend anything, and a live audit costs
-three Qloo calls. It therefore carries the in-memory limits in
-`second_opinion.throttle`: a per-client token bucket, a cap on audits in flight,
-and a bound on the seed string. Those limits are separate per mode — fixture
-audits read local files and spend no quota, so they draw on their own larger
-budget instead of the quota guard. Everything else is static or hand-authored and
-stays free.
+three Qloo calls — four when the agent's single follow-up lookup fires. It
+therefore carries the in-memory limits in `second_opinion.throttle`: a per-client
+token bucket, a cap on audits in flight, and a bound on the seed string. Those
+limits are separate per mode — fixture audits read local files and spend no quota,
+so they draw on their own larger budget instead of the quota guard. `/api/demo`
+reaches neither: it runs the same agent over records written into the repository
+by hand, so it is free in quota and reports `mode: "synthetic"` so that no one,
+frontend or test, can read it as a live result. Everything else is static or
+hand-authored and stays free.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
@@ -36,6 +41,7 @@ from .agent import SecondOpinionAgent
 from .audit import rules_payload
 from .catalog import seed_list
 from .config import DEFAULT_CONFIG, AuditConfig
+from .demo import DEMO_SEED, SCENARIOS, SyntheticAdapter
 from .env import load_env_file
 from .throttle import (
     MAX_SEED_LENGTH,
@@ -82,6 +88,22 @@ def _redact_credential(body: bytes) -> bytes:
     if len(key) < 4:
         return body
     return body.replace(key.encode("utf-8", "ignore"), REDACTED)
+
+
+def _format_exception() -> str:
+    """The traceback for the operator's log, with the same credential net applied.
+
+    `traceback.print_exc()` would write straight to stderr, and on a hosted
+    service that log is readable by whoever runs the host. An exception message
+    that ever formatted a captured value — `QLOO_API_KEY` included — would then be
+    recorded there in the clear. One byte scan on the way to the log closes that,
+    and the operator still gets the full frames.
+    """
+    buffer = io.StringIO()
+    traceback.print_exc(file=buffer)
+    return _redact_credential(buffer.getvalue().encode("utf-8", "ignore")).decode(
+        "utf-8", "replace"
+    )
 
 
 def _rate_limit_reason(mode: str) -> str:
@@ -182,7 +204,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._handle_seeds()
         if route == "/api/audit":
             return self._audit_guarded(query)
+        if route == "/api/demo":
+            return self._demo_guarded(query)
         return self._send_json({"error": "not found"}, 404)
+
+    def _guarded(self, handler, query, message):
+        """Run a request handler that must never close the socket mid-response."""
+        try:
+            return handler(query)
+        except Exception:
+            sys.stderr.write(_format_exception())
+            return self._send_json({"ok": False, "error": message}, 500)
 
     def _audit_guarded(self, query):
         """One guard for the whole audit path.
@@ -193,11 +225,35 @@ class Handler(BaseHTTPRequestHandler):
         The traceback goes to stderr for the operator; the client gets a plain
         500 with no internals.
         """
-        try:
-            return self._handle_audit(query)
-        except Exception:
-            traceback.print_exc()
-            return self._send_json({"ok": False, "error": "internal audit error"}, 500)
+        return self._guarded(self._handle_audit, query, "internal audit error")
+
+    def _demo_guarded(self, query):
+        return self._guarded(self._handle_demo, query, "internal demo error")
+
+    def _handle_demo(self, query):
+        """The scripted demonstration: the real agent over evidence written by hand.
+
+        It exists because a clean checkout has no `data/` and a judge's laptop has
+        no credential, while the interesting behaviour — a gap spotted, one re-read
+        issued, a verdict revised or declined — only shows up when the agent runs.
+        Nothing here touches the network or the key, so no budget is charged and the
+        response says `mode: "synthetic"` for exactly that reason.
+        """
+        scenario = (query.get("scenario") or ["improves"])[0].strip().lower()
+        if scenario not in SCENARIOS:
+            return self._send_json(
+                {"ok": False, "error": "unknown demo scenario: use improves or confirms"}, 400
+            )
+        agent = SecondOpinionAgent(SyntheticAdapter(scenario), config=DEFAULT_CONFIG)
+        report = agent.audit(DEMO_SEED)
+        report["demo"] = {
+            "scenario": scenario,
+            "evidence_origin": "synthetic: these artists, terms and affinity numbers are "
+                               "invented for this demonstration and were not returned by Qloo",
+            "seed_queries": agent.adapter.queries.count("resolve_seed"),
+            "entity_lookups": agent.adapter.queries.count("entity_record"),
+        }
+        return self._send_json(report)
 
     def _handle_seeds(self):
         """A hand-authored seed list: no fixtures, no cached metadata."""
@@ -299,7 +355,8 @@ def serve(host="0.0.0.0", port=8000):
     print(
         f"live audit limits:    {live['per_minute']}/minute per client, "
         f"burst {live['burst']}, {live['concurrent']} in flight "
-        f"— three Qloo requests each ({live['storage']}, reset on restart)",
+        f"— three Qloo requests each, four when the follow-up fires "
+        f"({live['storage']}, reset on restart)",
         flush=True,
     )
     print(

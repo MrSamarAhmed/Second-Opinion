@@ -25,6 +25,47 @@ produce a composite number, and does not claim that shared tags mean shared
 fans, demand, attendance, ticket sales or revenue. It audits whether Qloo's own
 descriptive metadata supports a pair, nothing more.
 
+## When the evidence is thin, it looks once more
+
+Two very different situations produce the same payload, and the record in hand
+cannot tell them apart: either the two artists genuinely share nothing in a
+dimension, or the copy that arrived inside the recommendation list simply says
+nothing there. A dimension whose candidate side is empty while the seed side is
+not is therefore *unproven*, not *empty* — and an `AFFINITY_ONLY` or
+`UNVERIFIABLE` verdict resting on such a dimension is a verdict with a named hole
+in it.
+
+So the agent takes one bounded second look. It picks the first candidate whose
+verdict is one of those two states, that carries an affinity number, and whose
+audit is not void, and re-reads **that entity's own record, requested by entity
+id** — the same documented lookup the seed record is read with, not a new
+endpoint, header or parameter — then re-runs the comparison and re-derives the
+receipts against the same rules.
+
+What is bounded, and how it behaves when it fails:
+
+- **One lookup per audit**, enforced in code by `MAX_FOLLOW_UP_QUERIES`, on the
+  path that succeeds and the paths that do not. A second candidate with the same
+  gap is reported as sharing the gap, not investigated.
+- **The budget is spent before the request is made**, so a timeout, an
+  authentication failure or an empty result cannot be retried into a fourth and
+  fifth upstream call.
+- **The verdict may improve, hold, or move in the cautious direction.** An entity's
+  own record can carry *less* than the list copy did; when it does, the state is
+  lowered rather than left alone.
+- **Nothing is invented to fill a gap.** If the re-read fails, returns nothing,
+  or fails receipt verification, the first-pass verdict stands and the trace says
+  which of those happened.
+- **The affinity number is never re-read as evidence of overlap.** The follow-up
+  supplies metadata only; direct term evidence and Qloo's affinity signal stay in
+  separate columns.
+
+The trace carries the whole decision — `identify_gap`, `plan_follow_up`,
+`follow_up_query`, `verify_receipts`, `investigation_outcome` — and the interface
+turns it into a card that states the gap, the reason one more query could reduce
+it, the action taken, the result and the final call. The second look is auditable
+rather than implied.
+
 ## Quick start
 
 Python 3.9+, standard library only. No installation step.
@@ -69,6 +110,34 @@ absent, and live mode never silently falls back to fixtures. With no key,
 client — see [Audit endpoint limits](#audit-endpoint-limits), where it also has
 its own request budget.
 
+## Demonstrations with no key and no captures
+
+`GET /api/demo` runs the **same agent** over cultural records written by hand
+into `second_opinion/demo.py` — invented artists, invented terms, invented
+affinity numbers — through a `SyntheticAdapter` that opens no socket, reads no
+`data/fixtures`, and never looks at `QLOO_API_KEY`. It exists because the
+interesting behaviour above only appears when the agent runs, and a clean
+checkout has no captures while a judge's laptop has no credential.
+
+```bash
+curl 'http://localhost:8000/api/demo?scenario=improves'   # the re-read closes the gap
+curl 'http://localhost:8000/api/demo?scenario=confirms'   # the re-read holds the verdict
+```
+
+The response is an ordinary audit report, so it carries the same receipts, the
+same state rule and the same trace, plus `mode: "synthetic"` and a `demo` block
+reporting the scenario, where the evidence came from, and the adapter's own call
+counts (one seed query, two entity reads — the seed's record and the followed-up
+candidate's). An unknown scenario is `400` with `use improves or confirms`.
+
+The page lists both under a heading that says *Demonstrations · synthetic*, and
+the evidence banner above their report reads "Synthetic demonstration — the
+artists, terms and affinities in this run are invented for the demonstration.
+They are not Qloo data and this is not a live API result." The banner is chosen
+from the response's own `mode`, and the demonstrations draw on neither audit
+budget, so a synthetic run can never be rendered as live evidence and can never
+consume the quota a real audit needs.
+
 ## Seed catalogue
 
 `second_opinion/catalog.py` contains eight hand-written artist search names and
@@ -90,13 +159,21 @@ The seed record is fetched by `filter.results.entities` and checked against the
 resolved entity ID. This is necessary because `signal.interests.entities`
 returns recommendations, not the seed itself.
 
+The follow-up uses that same first line of the record-reading path one more time
+— `filter.results.entities` set to the candidate's id, `take=1`, the returned
+`entity_id` checked against the request — so the fourth request in an audit is a
+repeat of a call this project already makes, not new API surface.
+
 ## Audit endpoint limits
 
 One live audit costs **three Qloo requests** — search, seed record, candidate
-set — and the endpoint is open to any visitor. Without a bound, a single page
-left refreshing in a loop spends the operator's quota. So `/api/audit` carries
-in-process limits from `second_opinion/throttle.py`, and every check runs
-*before* the API client is built, which means a refused request costs nothing.
+set — **four when the agent's single follow-up re-read fires**, and the endpoint
+is open to any visitor. Without a bound, a single page left refreshing in a loop
+spends the operator's quota. So `/api/audit` carries in-process limits from
+`second_opinion/throttle.py`, and every check runs *before* the API client is
+built, which means a refused request costs nothing. The follow-up is charged to
+the audit that is already inside this budget: it draws no token of its own and
+cannot become a second metered request.
 
 There is **one budget per mode**, because the two modes do not cost the same
 thing. A fixture audit reads `data/fixtures/**` from local disk and sends no
@@ -106,10 +183,11 @@ told the visitor their Qloo budget was spent when nothing had been spent:
 | Budget | Default | What it protects |
 | --- | --- | --- |
 | Live, per client | 6 audits/minute, burst 3 | The operator's Qloo quota. Past the burst the response is `429` with `Retry-After` and a body naming the budget. |
-| Live, in flight | 2 | Caps simultaneous upstream calls at roughly `2 × 3`, so slow Qloo responses cannot pile threads onto a small instance. Busy is `503` with `Retry-After: 2`. |
+| Live, in flight | 2 | Caps simultaneous upstream calls at roughly `2 × 4` in the worst case (three reads plus one follow-up re-read), so slow Qloo responses cannot pile threads onto a small instance. Busy is `503` with `Retry-After: 2`. |
 | Fixture, per client | 30 audits/minute, burst 10 | Local work only: the JSON parse and report build. It spends no quota, so it is sized generously and refused requests still cost nothing upstream. |
 | Fixture, in flight | 4 | A loop cannot occupy the instance with more than four local audits. |
 | Seed length | 120 characters | Longer input is `400` in either mode and never reaches an adapter. |
+| Follow-up lookups | 1 per audit | `MAX_FOLLOW_UP_QUERIES` in `agent.py`. It is not an environment variable, and the constructor clamps any request to it, so no caller can raise it; the budget is charged before the lookup is made, so failure paths spend it too. |
 
 Exhausting one budget leaves the other alone: after the live quota guard has
 refused a client, that client can still browse fixtures, and a page running
@@ -119,13 +197,19 @@ and the lookup that chooses a budget, `throttle_for_mode()`, answers an unknown
 mode with the *live* bucket rather than the generous one — so a future caller
 that passes a mode the throttle does not know does not inherit a free pass.
 
-`/api/seeds`, `/api/rules`, `/api/health` and the page itself are
-hand-authored or static, cost nothing, and are deliberately not throttled — a
-judge can reload them freely. The CLI is a single-user local tool and is not
-throttled either. A refused audit is not a dead end in the interface: the page
-says which budget ran out, whether it spends Qloo quota, and counts down to the
-next accepted audit. The countdown only writes text — the page sends no request
-on a timer, so a limit can never turn into the retry loop it exists to prevent.
+`/api/seeds`, `/api/rules`, `/api/health`, `/api/demo` and the page itself are
+hand-authored, static, or synthetic, cost the operator nothing, and are
+deliberately not throttled — a judge can reload them freely and run the
+demonstrations as often as they like. `/api/demo` is the one that needs the
+judgement stated: it is not metered because it reaches no network and reads no
+file, but it does run the real agent over a small fixed payload, so it is CPU
+work rather than free. Drawing on neither audit budget is what matters for
+quota, and that is asserted in tests rather than assumed. The CLI is a
+single-user local tool and is not throttled either. A refused audit is not a
+dead end in the interface: the page says which budget ran out, whether it spends
+Qloo quota, and counts down to the next accepted audit. The countdown only writes
+text — the page sends no request on a timer, so a limit can never turn into the
+retry loop it exists to prevent.
 
 Defaults are settable without touching code: `SO_AUDIT_PER_MINUTE`,
 `SO_AUDIT_BURST` and `SO_MAX_CONCURRENT_AUDITS` for live, and
@@ -152,18 +236,27 @@ are keyed by a truncated digest.
 | --- | --- |
 | No `QLOO_API_KEY` | HTTP 503; the response names `QLOO_API_KEY` but never a credential value |
 | Credential rejected | refusal code `authentication failed` |
-| Request timeout | refusal code `upstream timeout` |
+| Request timeout | refusal code `upstream timeout`; a timeout on the follow-up lookup costs the audit its one re-read and keeps the first-pass verdict |
 | Non-JSON response | `MalformedResponse`, surfaced as a refusal or HTTP 502 |
 | No search match | refusal code `seed resolution failed` |
 | Seed has no usable scored metadata | refusal code `insufficient seed metadata` |
 | Receipt cannot be re-derived | candidate state becomes `UNVERIFIABLE` and the audit is void for that candidate |
+| Follow-up lookup returns no record | first-pass verdict stands; the outcome says the gap is real rather than a fetching artifact |
+| Re-read makes the pair look comparable but its receipts fail re-derivation | the forged record is discarded and the first-pass verdict stands |
 | Seed longer than 120 characters, or blank, or an unknown `mode`, or a non-numeric threshold | HTTP 400, no Qloo request, no limit token spent |
 | That mode's per-client budget exhausted | HTTP 429 with `Retry-After`, naming the mode and whether it spends quota; nothing is sent to Qloo, in either mode |
 | Too many audits of that mode in flight | HTTP 503 with `Retry-After: 2`; nothing is sent to Qloo |
 | An unexpected error inside the audit path | HTTP 500 `internal audit error`; the traceback goes to the server log, never to the client |
+| An unexpected error inside the demo path | HTTP 500 `internal demo error`; same rule — the log line is run through the credential scan before it is written |
+| Unknown `scenario` on `/api/demo` | HTTP 400 naming the two valid scenarios |
 
 Every JSON response is scanned once for the credential value before it is
-written. Adapter messages are built from text that never includes the key, so
+written, and so is the traceback that a 500 leaves behind in the log. The reason
+is the last line of a traceback: it is the exception's own message, and an
+adapter error that quotes the request it was making can carry the credential into
+it. Redacting the rendered stack costs the operator nothing — the file and line
+information survives, only the value does not.
+Adapter messages are built from text that never includes the key, so
 the scan should never fire; it is the net under that guarantee rather than a
 substitute for it. An error response carries a code and a short message, not an
 upstream body. The key itself travels only in the `X-Api-Key` header, so it can
@@ -220,19 +313,19 @@ Verified suite, both runs with `QLOO_API_KEY` and `SO_MODE` unset:
 
 | Input present | Result |
 | --- | --- |
-| Clean publication copy — no `data/`, no `.env`, no captured responses | 224 tests: 167 passed, 0 failed, 0 errors, 57 skipped, exit code 0 |
-| The same copy with a local `data/fixtures/` directory temporarily available | 224 tests OK, 0 skips, exit code 0 |
+| Clean publication copy — no `data/`, no `.env`, no captured responses | 270 tests: 213 passed, 0 failed, 0 errors, 57 skipped, exit code 0 |
+| The same copy with a local `data/fixtures/` directory temporarily available | 270 tests OK, 0 skips, exit code 0 |
 
 The 57 skips are the fixture-dependent tests: they compare real payloads field by
 field, and the payloads they read are Qloo API responses that stay private and are
-not published with this repository. A public checkout therefore runs 167 tests and
+not published with this repository. A public checkout therefore runs 213 tests and
 skips those 57 with the reason
 
 ```text
 captured Qloo fixtures are not present in this checkout
 ```
 
-The skips are a missing-input condition, not a failure: the same 224 tests run
+The skips are a missing-input condition, not a failure: the same 270 tests run
 with 0 skips wherever the captured responses are available.
 
 Coverage includes receipt re-derivation, fabricated shared terms, normalization,
@@ -253,7 +346,32 @@ that the countdown never fetches. It also checks that every click takes a new
 ticket, so a slow audit cannot replace the report of the seed the visitor
 chose last. `tests/test_clean_checkout.py` drives the shipped server over a copy
 with no `data/` and no key, and asserts there that a fixture request refuses with
-`503` in fixture mode and without naming the directory the server runs from.
+`503` in fixture mode and without naming the directory the server runs from, that
+the synthetic demonstration still runs in that state, and that twenty
+demonstrations leave the live audit failing for the real reason — no credential —
+rather than as a rate limit.
+
+`tests/test_investigation.py` (42 tests) covers the second look, on invented
+records only. Its load-bearing assertions are **adapter call counts**, so an
+agent that never re-reads fails them and an agent that re-reads twice fails them
+too: no gap means no lookup; two gaps still mean one lookup; only an entity id
+already present in the candidate set is ever requested, in the recorded order
+`resolve_seed → candidates → seed_record → entity_record`; the ceiling cannot be
+raised by a caller, can be lowered to zero, and is spent by a lookup that fails.
+Verdict changes are checked against hand-computed overlaps and an independent
+state oracle rather than a recorded expected value, in all three directions: a
+re-read that legitimately populates the missing dimensions raises the state, one
+that adds disjoint evidence holds it, and one whose own record carries *less*
+than the list copy did lowers it. The failure paths — timeout, authentication
+error, no record, unreadable record — must each return the first-pass report
+byte-for-byte what a zero-budget run produced, with the candidate's whole payload
+compared, not just its state. A re-read that would manufacture support is
+detected by the receipt check and discarded. Provenance is verified by resolving
+every receipt's source path against the payload the report claims it came from,
+and the trace must name the gap, the reason, the action, the result and the final
+decision. A separate class asserts that nothing in the whole report — including a
+crash and its log line — can carry the sentinel credential, a traceback, or a
+local path.
 
 ## Deployment
 
@@ -268,8 +386,8 @@ steps are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ```text
 second_opinion/     product code: config, normalization, extraction, audit,
-                    agent, adapters, CLI, environment loader, audit throttle,
-                    HTTP server
+                    agent, adapters, synthetic demo records, CLI, environment
+                    loader, audit throttle, HTTP server
 web/index.html      single-page interface, no build step
 tests/              test suite above
 docs/DEPLOYMENT.md  hosting and verification notes
@@ -290,12 +408,31 @@ the response field names the auditor reads, and the rules the auditor applies to
 them. The seed names in `second_opinion/catalog.py` are hand-written artist
 search queries, not published Qloo entities.
 
-Permission to redistribute Qloo response data has **not** been established, and
-nothing in this repository claims otherwise: the terms that would settle it could
-not be verified from the public documentation available when this copy was
-prepared. The conservative rule applied here is therefore — publish code that
-*calls* the API, keep anything the API *returned* out of the repository. Whoever
-runs this with their own key is responsible for the terms attached to it.
+That is not a guess about what is allowed. The official hackathon developer guide
+says, verbatim: *"Do not store Qloo response data in a public repository — that
+makes the data publicly accessible outside the terms of your API key."* The same
+page permits the other half explicitly: *"Private server-side caching is fine and
+there is no time limit on how long you can keep cached responses."* So the split
+this repository observes is the split the rules draw — code that *calls* the API
+is public, what the API *returned* stays private. Fixture mode exists for exactly
+that private local copy, and `data/fixtures/` is absent here on purpose rather
+than by omission. Quote: docs.qloo.com/reference/qloo-llm-hackathon-developer-guide,
+read 2026-10-29.
+
+The credential rules are followed to the letter in the same source: *"Never share
+a credential between teams or put one in source control, a browser app, a public
+MCP configuration, or a demo recording."* The key is read from the process
+environment only, sent only as the `X-Api-Key` header, never placed in the page
+or a URL, and scrubbed from any response body or traceback the server writes.
+No recording, screenshot or captured payload is published from this copy.
+
+The presentation rule is the one this tool is built around — *"Present results
+with their source and limits. Distinguish a Qloo result from your own product
+interpretation, and do not describe an affinity as a causal claim or a
+probability about an individual."* Every number carries the field path it came
+from, every run is labelled live, saved-capture or synthetic, and the affinity
+column is Qloo's own value, displayed separately from the term evidence and never
+recomputed, blended into a score, or read as a claim about a listener.
 
 ## Limitations
 
@@ -307,14 +444,29 @@ runs this with their own key is responsible for the terms attached to it.
   recompute or reinterpret them.
 - A live audit depends on an operator-provided `QLOO_API_KEY` and on the current
   Qloo API behavior.
-- One live audit costs three Qloo requests, so a hosted demo spends the
-  operator's quota on other people's clicks. The live budget is what bounds
-  that, not what authorizes it. Fixture audits spend no quota and draw on their
-  own budget, so local testing never eats into the live allowance.
+- One live audit costs three Qloo requests, four when the follow-up re-read
+  fires, so a hosted demo spends the operator's quota on other people's clicks.
+  The live budget is what bounds that, not what authorizes it. Fixture audits
+  spend no quota and draw on their own budget, so local testing never eats into
+  the live allowance.
+- The follow-up is **gap-triggered, not routine**, and on the operator's own
+  captured audits it has never fired: across the seven seeds those responses
+  cover, every run reported `follow_up_queries_used: 0` and
+  `candidates_with_gap: 0`, and stayed at three requests. `AFFINITY_ONLY`
+  verdicts do occur in that data — the gap condition is simply stricter, because
+  a dimension has to be empty on the candidate's side while the seed carries
+  terms there. So the second look is demonstrated honestly, by the two synthetic
+  scenarios and by call-count tests against the real agent, and a live audit
+  today will usually show it declining to run. It has not yet been observed
+  firing against Qloo itself.
 - The audit budget is in-memory, per-instance, per-mode state: a restart, a
   redeploy or a free-tier idle spin-down refills every bucket, and running two
   instances doubles the allowance. It is a quota guard, not access control — the
   demo has no sign-in, so anyone within budget can run an audit.
+- No hosted demo URL exists yet, while the event's submission rules ask for a link
+  to a functional, publicly published demo application. Until it is deployed, the
+  live path is verified locally: against a stubbed adapter in the suite and
+  against one deliberate credentialed audit through this copy's own server.
 - The clean-copy audit verifies local no-key behavior, not a hosted deployment.
 
 ## License

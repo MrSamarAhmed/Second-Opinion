@@ -45,6 +45,33 @@
   .seed .t{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
   .seed .t.none{color:var(--weak)}
   .seed:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .seed.demo{border:1px dashed #33476b;background:rgba(9,14,26,.45);margin-top:6px}
+  .seed.demo .n{color:var(--muted);font-weight:500}
+  .seed.demo:hover{border-color:var(--weak)}
+  .sidebar-note{font-size:10.5px;color:var(--dim);line-height:1.5;margin:8px 10px 2px}
+  .divider{height:1px;background:var(--line);margin:10px 6px}
+
+  .evidence{display:flex;gap:10px;align-items:center;padding:10px 18px;font-size:12px;
+    border-bottom:1px solid var(--line);letter-spacing:.02em}
+  .evidence.live{color:var(--ok);background:rgba(52,211,153,.06)}
+  .evidence.fixture{color:var(--accent);background:rgba(125,211,252,.06)}
+  .evidence.synthetic{color:var(--weak);background:rgba(251,191,36,.08);font-weight:550}
+  .evidence .tag{font-size:10px;text-transform:uppercase;letter-spacing:.08em;
+    border:1px solid currentColor;border-radius:5px;padding:2px 6px;flex:none}
+
+  .investigation{padding:14px 18px;border-bottom:1px solid var(--line);background:rgba(9,14,26,.35)}
+  .investigation h3{margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+    color:var(--dim);font-weight:600}
+  .invstep{display:grid;grid-template-columns:104px 1fr;gap:12px;font-size:12.5px;
+    padding:6px 0;border-top:1px solid rgba(34,48,77,.5);align-items:baseline}
+  .invstep:first-of-type{border-top:0}
+  .invstep .lab{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em}
+  .invstep .val{color:var(--muted);line-height:1.5}
+  .invstep .val code{background:var(--panel-2);padding:1px 5px;border-radius:4px;font-size:11.5px;
+    border:1px solid var(--line)}
+  .inv-improved{color:var(--ok)} .inv-cautious{color:var(--weak)}
+  .followchip{font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);
+    border:1px solid rgba(125,211,252,.3);border-radius:5px;padding:2px 6px;margin-left:8px}
 
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius)}
   .seedhead{padding:16px 18px;border-bottom:1px solid var(--line)}
@@ -179,9 +206,17 @@
     audience size, demand, attendance, ticket sales or revenue, and it does not establish that a
     recommendation will succeed. The units are tags, not people.
     <br>
+    <strong>How the agent works.</strong> It audits the recommendations it is handed, then looks
+    for a verdict blocked by missing metadata on one side only. If it finds one, it may spend
+    <em>one</em> follow-up lookup of that entity's own record and re-derive the verdict under the
+    same receipt checks — never more than one per audit, and a failed lookup still costs the
+    budget. A live audit is three Qloo requests, four when that re-read fires.
+    <br>
     The seed list above is a short hand-written set of artist names. Selecting one resolves
     that name through the Qloo API and audits the recommendations returned for it; no captured
-    response data ships with the application.
+    response data ships with the application. The two sidebar demonstrations run the same agent
+    over invented evidence so the follow-up behaviour can be seen without a key; the banner above
+    their results says <em>synthetic</em> because they are not Qloo results.
   </footer>
 </div>
 
@@ -201,6 +236,16 @@ let RETRY_TIMER = null;
 // newest. Without this, a slow earlier audit overwrites the seed the visitor last
 // chose and the panel disagrees with the highlighted seed.
 let REQUEST_SEQ = 0;
+
+// The two demonstrations run the same auditor over artists, terms and affinity
+// numbers that are written into the repository by hand. They exist so the
+// investigation pass can be shown on a laptop with no key and no captured data,
+// and every response they get arrives as mode "synthetic", which the panel prints
+// above the report. A demonstration is never rendered as a Qloo result.
+const DEMO_ENTRIES = [
+  {name: "Demo · the gap closes", demo: "improves", note: "synthetic evidence"},
+  {name: "Demo · the gap holds", demo: "confirms", note: "synthetic evidence"},
+];
 
 // The 429 card counts down so the reader knows when to click again. It only ever
 // writes text: it must not re-send the audit, or a rate limit would turn itself
@@ -243,11 +288,12 @@ async function boot(){
     }
     badges.appendChild(badge(`threshold ≥ ${RULES.thresholds.strong_threshold.toFixed(2)}`));
     badges.appendChild(badge(`${RULES.thresholds.min_dimensions_corroborated} of 4 dimensions`));
-    renderSeeds(data.seeds);
+    renderSeeds(data.seeds.concat(DEMO_ENTRIES));
     if(MODE === "live" && !LIVE_READY){
       $("#stage").innerHTML = `<div class="err">Live mode is enabled but the server has no
         <code>QLOO_API_KEY</code> in its environment, so audits cannot run. Nothing is
-        substituted in its place. Choose a seed once the key is configured.</div>`;
+        substituted in its place. Choose a seed once the key is configured — or run one of
+        the two demonstrations in the sidebar, which need no key and send no Qloo request.</div>`;
       return;
     }
     const first = data.seeds.find(s => s.metadata && s.metadata.has_rich_record) || data.seeds[0];
@@ -260,18 +306,40 @@ async function boot(){
 function renderSeeds(seeds){
   const box = $("#seedlist");
   box.innerHTML = "";
+  let dividerAdded = false;
   seeds.forEach(s => {
+    if(s.demo && !dividerAdded){
+      dividerAdded = true;
+      const line = document.createElement("div");
+      line.className = "divider";
+      box.appendChild(line);
+      const heading = document.createElement("h2");
+      heading.textContent = "Demonstrations · synthetic";
+      box.appendChild(heading);
+    }
     const el = document.createElement("div");
-    el.className = "seed";
+    el.className = "seed" + (s.demo ? " demo" : "");
     el.tabIndex = 0;
     el.dataset.id = s.name;
-    el.title = s.note || "";
+    el.title = s.demo
+      ? "Runs the real auditor over invented evidence. No key, no network, no Qloo request."
+      : (s.note || "");
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", s.demo
+      ? `${s.name} — synthetic demonstration, not a Qloo result`
+      : `Audit ${s.name} in ${MODE} mode`);
     el.innerHTML = `<span class="n">${esc(s.name)}</span>
       <span class="t">${esc(s.note || "search query")}</span>`;
     el.addEventListener("click", () => selectSeed(s));
     el.addEventListener("keydown", ev => { if(ev.key === "Enter" || ev.key === " "){ ev.preventDefault(); selectSeed(s); }});
     box.appendChild(el);
   });
+  const note = document.createElement("div");
+  note.className = "sidebar-note";
+  note.textContent = "The demonstrations run the same agent, rules and receipt checks over "
+    + "artists and terms written into the repository by hand, so the investigation pass can be "
+    + "shown without a key or captured data. They are not Qloo results.";
+  box.appendChild(note);
 }
 
 async function selectSeed(seed){
@@ -279,11 +347,19 @@ async function selectSeed(seed){
   const ticket = ++REQUEST_SEQ;
   ACTIVE = seed;
   document.querySelectorAll(".seed").forEach(el => el.classList.toggle("active", el.dataset.id === seed.name));
-  $("#stage").innerHTML = `<div class="skeleton">resolving seed and running the agent…</div>`;
+  $("#stage").innerHTML = seed.demo
+    ? `<div class="skeleton">running the agent over synthetic evidence…</div>`
+    : `<div class="skeleton">resolving seed and running the agent…</div>`;
   $("#tracebox").hidden = true;
   try{
-    const q = new URLSearchParams({seed: seed.name, mode: MODE});
-    const res = await fetch(`/api/audit?${q.toString()}`);
+    // One guarded request path for both kinds of run: a real audit and a
+    // demonstration. The demonstration endpoint is chosen by the entry that was
+    // clicked, never by a value typed into the page, and it answers mode
+    // "synthetic" — which is what the banner below the response prints.
+    const q = seed.demo
+      ? new URLSearchParams({scenario: seed.demo})
+      : new URLSearchParams({seed: seed.name, mode: MODE});
+    const res = await fetch(`${seed.demo ? "/api/demo" : "/api/audit"}?${q.toString()}`);
     const data = await res.json();
     // A newer click already owns the panel: rendering this response would show a
     // seed the visitor did not last choose.
@@ -301,16 +377,24 @@ function render(data, seed, status){
   stage.innerHTML = "";
   renderTrace(data.trace);
 
-  if(data.ok === false && data.refusal){ stage.appendChild(refusalCard(data.refusal, seed)); return; }
+  if(data.ok === false && data.refusal){
+    stage.appendChild(evidenceBanner(data));
+    stage.appendChild(refusalCard(data.refusal, seed));
+    return;
+  }
   if(data.ok !== true){
+    // The error card already reports the mode in its own facts grid: no verdict
+    // was reached, so there is no evidence to label yet.
     stage.appendChild(errorCard(data, seed, status));
     return;
   }
 
+  stage.appendChild(evidenceBanner(data));
+
   const head = document.createElement("div");
   head.className = "seedhead";
   head.innerHTML = `<h1>${esc(data.seed.name)}</h1>
-    <div class="meta">${data.candidates.length} candidate recommendations returned by Qloo.
+    <div class="meta">${data.candidates.length} candidate recommendations${originPhrase(data.mode)}.
     Seed metadata: <code>${data.seed.tag_count} tags</code>,
     <code>${data.seed.property_count} properties</code>,
     <code>${4 - data.seed.missing_dimensions.length}/4</code> dimensions populated.
@@ -318,6 +402,7 @@ function render(data, seed, status){
     dimensions at overlap ≥ ${data.rules.thresholds.strong_threshold.toFixed(2)}.</div>`;
   stage.appendChild(head);
 
+  if(data.investigation) stage.appendChild(investigationCard(data.investigation));
   if(data.dimension_summary) stage.appendChild(dimSummary(data.dimension_summary));
 
   const rows = document.createElement("div");
@@ -325,6 +410,102 @@ function render(data, seed, status){
   const sorted = [...data.candidates].sort((a,b) => (b.affinity ?? -1) - (a.affinity ?? -1));
   sorted.forEach(c => rows.appendChild(candidateRow(c)));
   stage.appendChild(rows);
+}
+
+// Which of the three evidence sources a report came from, in the words the page
+// puts above it. A synthetic run must never read like a live one, so the mode the
+// server reports — not the sidebar entry — decides what is printed.
+const EVIDENCE = {
+  live: ["live", "Live Qloo evidence",
+    "Every term, source path and affinity below was returned by the Qloo API in this request."],
+  fixture: ["fixture", "Saved Qloo captures",
+    "Read from API responses stored on this server. No request was sent to Qloo."],
+  synthetic: ["synthetic", "Synthetic demonstration",
+    "The artists, terms and affinities in this run are invented for the demonstration. "
+    + "They are not Qloo data and this is not a live API result."],
+};
+const ORIGINS = {
+  live: " returned by Qloo",
+  fixture: " read from the captures stored on this server",
+  synthetic: " invented for this demonstration",
+};
+// The three honest outcomes of a follow-up re-read. A second pass is allowed to
+// raise a verdict, hold it, or lower it — never to leave the reader guessing
+// which, so the server reports the direction and the page says it plainly.
+const DIRECTION = {
+  improved: "verdict raised on the direct record",
+  more_cautious: "verdict lowered: the entity's own record carries less than the list copy did",
+  held: "same verdict reached from an independent record",
+};
+
+function originPhrase(mode){
+  return ORIGINS[mode] || " returned by the audit source";
+}
+
+function evidenceBanner(data){
+  const mode = data.mode || MODE;
+  const spec = EVIDENCE[mode] || ["unknown", "Source not reported",
+    "This run did not say where its evidence came from, so treat every claim in it as unverified."];
+  const el = document.createElement("div");
+  el.className = "evidence " + spec[0];
+  el.innerHTML = `<span class="tag">${esc(spec[1])}</span><span>${esc(spec[2])}</span>`
+    + (data.demo ? `<span class="tag">${esc("scenario: " + data.demo.scenario)}</span>` : "");
+  return el;
+}
+
+function invRow(label, value, cls){
+  const el = document.createElement("div");
+  el.className = "invstep";
+  el.innerHTML = `<span class="lab">${esc(label)}</span><span class="val${cls ? " " + cls : ""}">${value}</span>`;
+  return el;
+}
+
+function investigationCard(inv){
+  const el = document.createElement("div");
+  el.className = "investigation";
+  const title = document.createElement("h3");
+  title.textContent = "What the agent did after the first pass";
+  el.appendChild(title);
+
+  const cap = inv.max_follow_up_queries;
+  const spend = inv.triggered ? "the query was issued"
+    : inv.gap ? "a gap existed but no lookup was left to spend on it"
+    : "no gap was found, so nothing justified a query";
+  el.appendChild(invRow("Budget", `${cap} follow-up lookup${cap === 1 ? "" : "s"} allowed in this audit · `
+    + `${inv.follow_up_queries_used} used — ${esc(spend)}`));
+
+  if(!inv.gap){
+    el.appendChild(invRow("Gap found", "none. Every candidate's verdict rests on dimensions that carry terms on "
+      + "both sides, so a further query could only repeat what is already comparable."));
+  } else {
+    const g = inv.gap;
+    el.appendChild(invRow("Gap found", `<b>${esc(g.candidate)}</b> — its verdict <code>${esc(g.state)}</code> was `
+      + `reached with ${esc(g.dimensions.join(", "))} uncomparable: the record in hand carries no term there `
+      + `while the seed does. ${inv.candidates_with_gap} candidate(s) share this kind of gap.`));
+    el.appendChild(invRow("Why", esc(inv.reason || "—")));
+    if(inv.action){
+      el.appendChild(invRow("Action", `<b>${esc(inv.action.candidate)}</b> — `
+        + esc(inv.action.lookup)));
+    }
+    const o = inv.outcome || {};
+    const sentence = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+    if(o.receipts_verified === null || o.receipts_verified === false){
+      el.appendChild(invRow("Result", esc(o.detail || "the follow-up produced no usable record."), "inv-cautious"));
+    } else {
+      const moved = o.changed
+        ? ` It moved <code>${esc(o.state_before)}</code> → <code>${esc(o.state_after)}</code>.`
+        : ` It held at <code>${esc(o.state_after)}</code>.`;
+      el.appendChild(invRow("Result", `${esc(sentence(DIRECTION[o.direction] || "verdict restated"))}: `
+        + (o.newly_comparable && o.newly_comparable.length
+          ? `now comparable in ${esc(o.newly_comparable.join(", "))}` : "nothing new became comparable")
+        + (o.remaining_gaps && o.remaining_gaps.length
+          ? `, still empty in ${esc(o.remaining_gaps.join(", "))}` : "") + `.${moved}`,
+        o.direction === "improved" ? "inv-improved" : "inv-cautious"));
+    }
+  }
+  el.appendChild(invRow("Decision", esc(inv.decision || "—"),
+    inv.outcome && inv.outcome.direction === "improved" ? "inv-improved" : null));
+  return el;
 }
 
 function dimSummary(summary){
@@ -350,13 +531,20 @@ function candidateRow(c){
   const pct = aff == null ? 0 : Math.max(0, Math.min(1, aff)) * 100;
   const dims = c.dimensions || {};
   const corr = Object.values(dims).filter(d => d.status === "corroborated").length;
+  // A candidate the agent re-read directly is marked in its own row, so a
+  // second-pass verdict is never mistaken for a first-pass one.
+  const inv = c.investigation;
+  const chip = inv && inv.follow_up
+    ? `<span class="followchip">follow-up · ${inv.direction === "improved" ? "raised"
+        : inv.direction === "more_cautious" ? "lowered" : "held"}</span>`
+    : "";
   const head = document.createElement("div");
   head.className = "rowhead";
   head.tabIndex = 0;
   head.innerHTML = `
     <div>
       <div class="cname">${esc(c.candidate)}</div>
-      <div class="csub">${corr} of 4 dimensions corroborated${c.receipts_verified ? " · receipts verified" : " · verification failed"}</div>
+      <div class="csub">${corr} of 4 dimensions corroborated${c.receipts_verified ? " · receipts verified" : " · verification failed"}${chip}</div>
     </div>
     <div class="aff">
       <div class="track"><div class="fill" style="width:${pct}%"></div></div>
@@ -379,6 +567,18 @@ function detailBody(c){
   reason.className = "reason";
   reason.textContent = c.reason;
   frag.appendChild(reason);
+
+  if(c.investigation && c.investigation.follow_up){
+    const inv = c.investigation;
+    const note = document.createElement("div");
+    note.className = "ctx";
+    note.innerHTML = `<div><b>the block below was rebuilt from a direct re-read:</b> ${esc(inv.record_source)}</div>
+      <div><b>dimensions that were one-sided in the first pass:</b> ${esc((inv.dimensions_under_doubt || []).join(", ") || "none")}</div>
+      <div><b>verdict before → after:</b> ${esc(inv.state_before)} → ${esc(inv.state_after)}
+        (${esc(DIRECTION[inv.direction] || "restated")})</div>
+      <div><b>affinity:</b> unchanged — the re-read supplied metadata, never a score.</div>`;
+    frag.appendChild(note);
+  }
 
   const grid = document.createElement("div");
   grid.className = "dimgrid";
@@ -440,7 +640,9 @@ function errorCard(data, seed, status){
   // Which budget ran out, said in terms of what that mode actually costs. A
   // fixture read spends no quota, so it must not be described as quota.
   const spendsQuota = (data.limit && typeof data.limit.spends_quota === "boolean")
-    ? data.limit.spends_quota : (mode !== "fixture");
+    ? data.limit.spends_quota : (mode === "live");
+  const localRead = mode === "fixture"
+    ? "no, local read" : mode === "synthetic" ? "no, invented data" : "yes, three requests";
   const code = data.refusal_code || data.code;
   const hint = {
     "missing credentials": "The server has no QLOO_API_KEY in its environment.",
@@ -448,7 +650,7 @@ function errorCard(data, seed, status){
     "upstream timeout": "The request to Qloo timed out. Try the seed again.",
     "no results": "Qloo's artist search returned no match for this name.",
     "rate_limited": spendsQuota
-      ? "This client's live audit budget is spent. One live audit costs three Qloo requests, so the server bounds it to protect the operator's quota. Fixture audits draw on a separate budget and are unaffected."
+      ? "This client's live audit budget is spent. One live audit costs three Qloo requests — four when the agent's single follow-up re-read fires — so the server bounds it to protect the operator's quota. Fixture audits draw on a separate budget and are unaffected."
       : "This client's fixture audit budget is spent. Fixture mode reads saved captures on the server and sends nothing to Qloo, so no API quota was used — this limit only bounds local work. The live budget is untouched.",
     "audit_busy": spendsQuota
       ? "Every live audit slot on this instance is busy with another request."
@@ -465,7 +667,7 @@ function errorCard(data, seed, status){
     <div class="facts"><div class="fact"><div class="k">mode</div><div class="v">${esc(mode)}</div></div>
       <div class="fact"><div class="k">http status</div><div class="v">${esc(status || "—")}</div></div>
       ${data.limit ? `<div class="fact"><div class="k">${esc(mode)} budget</div><div class="v">${esc(data.limit.per_minute + "/min, burst " + data.limit.burst)}</div></div>` : ""}
-      ${data.limit ? `<div class="fact"><div class="k">spends Qloo quota</div><div class="v">${esc(data.limit.spends_quota ? "yes, three requests" : "no, local read")}</div></div>` : ""}</div>`;
+      ${data.limit ? `<div class="fact"><div class="k">spends Qloo quota</div><div class="v">${esc(data.limit.spends_quota ? "yes, three requests (four with the follow-up)" : localRead)}</div></div>` : ""}</div>`;
   if(timed) countdown(el.querySelector(".count"), wait, mode);
   return el;
 }
