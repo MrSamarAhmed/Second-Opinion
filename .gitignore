@@ -20,3 +20,10 @@ __pycache__/
 /citytaste/analysis_output.txt
 /VALIDATION_REPORT.md
 /RESELECTION_REPORT.md
+
+# Development-only modules that read the captured responses and print
+# Qloo-derived metrics. They are absent from this tree by design; ignoring them
+# also stops an accidental copy from being committed.
+/second_opinion/study.py
+/scripts/
+/docs/LIVE_INTEGRATION.md
