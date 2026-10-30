@@ -1,7 +1,8 @@
 # Deployment notes
 
-Status: **not deployed — no public demo URL exists.** No GitHub repository was
-created from this copy, nothing was pushed, and no hosting provider was contacted.
+Status: **published to GitHub, not yet deployed.** The repository is public at
+`https://github.com/MrSamarAhmed/Second-Opinion` (commit `eb02b4c92e25685cae07424e8ab6cdf8a3fd4b8b`),
+but no hosting service has been created and no public demo URL exists yet.
 This file records what has been verified locally and the exact steps an operator
 performs.
 
@@ -57,8 +58,8 @@ the key at runtime.
 
 `second_opinion/catalog.py` holds eight hand-written artist names and a short
 editorial note each. It contains no entity IDs, tag counts, affinities, or
-captured payloads. `/api/seeds` serves that list plus the frozen rules and a
-`live_ready` flag; selecting a seed sends its name to `/api/audit`, which
+captured payloads. `/api/seeds` serves that list plus the frozen rules and an
+`environment.live_ready` flag; selecting a seed sends its name to `/api/audit`, which
 resolves it through the live Qloo search API and then audits the live
 recommendation set.
 
@@ -71,10 +72,10 @@ payloads written by the harness, not from Qloo.
 
 | Check | Observed |
 | --- | --- |
-| `python3 -m unittest discover -s tests -t .` | 270 tests: 213 passed, 0 failed, 0 errors, 57 skipped (missing captured responses), exit 0 |
-| Same suite with `data/fixtures/` temporarily made available | 270 tests OK, 0 skips — neither audit budget interferes with fixture audits |
+| `python3 -m unittest discover -s tests -t .` | 271 tests: 214 passed, 0 failed, 0 errors, 57 skipped (missing captured responses), exit 0 |
+| Same suite with `data/fixtures/` temporarily made available | 271 tests OK, 0 skips — neither audit budget interferes with fixture audits |
 | `GET /api/health` | `200 {"ok": true}` |
-| `GET /api/seeds` | `200`, `mode: "live"`, `live_ready: false`, 8 static seeds |
+| `GET /api/seeds` | `200`, `mode: "live"`, `environment.live_ready: false`, 8 static seeds |
 | `GET /` | `200`, `text/html`, the single-page frontend |
 | `GET /api/demo?scenario=improves` with no key and no `data/` | `200`, `ok: true`, `mode: "synthetic"`, `demo.entity_lookups: 2`, `demo.seed_queries: 1`, `investigation.follow_up_queries_used: 1`, outcome direction `improved` |
 | `GET /api/demo?scenario=nope` | `400` naming the two valid scenarios |
@@ -154,8 +155,8 @@ convenience only. In a container or on a host, the key comes from the platform.
 
 ### Free-tier container host: what to set (Render as the example)
 
-Verified against Render's documentation while preparing this copy; **no account was
-created and nothing was deployed.**
+Verified against Render's documentation while preparing this copy; **the repository
+has since been published, but no account was created and nothing was deployed.**
 
 | Setting | Value | Why |
 | --- | --- | --- |
@@ -219,9 +220,12 @@ configuration above.
 
 ## Minimum steps to a public demo
 
-1. Publish this branch to the GitHub repository, then create a web service from it
-   using the included `Dockerfile` (or any host that runs a long-lived process with
-   a `PORT`).
+1. Use the already-published GitHub repository (`MrSamarAhmed/Second-Opinion`),
+   branch `main`, and create a web service from it using the included `Dockerfile`
+   (or any host that runs a long-lived process with a `PORT`). If your host's free
+   tier does not offer a Docker instance, the app is standard-library-only, so an
+   empty `requirements.txt` and the start command `python3 -m second_opinion.server`
+   also work.
 2. Set `QLOO_API_KEY` as a runtime secret in the platform's environment settings.
 3. Decide the audit budget for the audience you expect — see "Sizing the audit
    budget" above — and set `SO_AUDIT_PER_MINUTE`, `SO_AUDIT_BURST` and
@@ -232,8 +236,8 @@ configuration above.
 4. Configure the health check path as `/api/health`.
 5. Let the platform assign the port; the app binds `$PORT`.
 6. Confirm from outside: `GET /api/seeds` returns 8 seeds with
-   `"live_ready": true`, then `GET /api/audit?seed=Laufey&mode=live` returns
-   `ok: true`.
+   `environment.live_ready: true`, then `GET /api/audit?seed=Laufey&mode=live`
+   returns `ok: true`.
 7. Confirm the demonstration path works on the deployed instance too:
    `GET /api/demo` returns `ok: true` with `mode: "synthetic"`. It needs no key
    and no `data/`, so it is the half of the product a judge can always run — and
@@ -254,8 +258,8 @@ preparation, so no deployment claim is made.
 
 ## Remaining deployment blockers
 
-- No GitHub repository or hosting service has been created from this copy, and no
-  push has been performed; the operator must authorize and run those steps.
+- The GitHub repository has been published, but a hosting service has not been
+  created from it; the operator must authorize and run that step.
 - No public demo URL exists.
 - One credentialed live audit has been driven through this copy's own server and
   returned `ok: true` with every receipt verified, so the live path is no longer

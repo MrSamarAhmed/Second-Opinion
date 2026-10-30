@@ -313,19 +313,19 @@ Verified suite, both runs with `QLOO_API_KEY` and `SO_MODE` unset:
 
 | Input present | Result |
 | --- | --- |
-| Clean publication copy — no `data/`, no `.env`, no captured responses | 270 tests: 213 passed, 0 failed, 0 errors, 57 skipped, exit code 0 |
-| The same copy with a local `data/fixtures/` directory temporarily available | 270 tests OK, 0 skips, exit code 0 |
+| Clean publication copy — no `data/`, no `.env`, no captured responses | 271 tests: 214 passed, 0 failed, 0 errors, 57 skipped, exit code 0 |
+| The same copy with a local `data/fixtures/` directory temporarily available | 271 tests OK, 0 skips, exit code 0 |
 
 The 57 skips are the fixture-dependent tests: they compare real payloads field by
 field, and the payloads they read are Qloo API responses that stay private and are
-not published with this repository. A public checkout therefore runs 213 tests and
+not published with this repository. A public checkout therefore runs 214 tests and
 skips those 57 with the reason
 
 ```text
 captured Qloo fixtures are not present in this checkout
 ```
 
-The skips are a missing-input condition, not a failure: the same 270 tests run
+The skips are a missing-input condition, not a failure: the same 271 tests run
 with 0 skips wherever the captured responses are available.
 
 Coverage includes receipt re-derivation, fabricated shared terms, normalization,
@@ -375,12 +375,12 @@ local path.
 
 ## Deployment
 
-**Not deployed — no public demo URL exists.** Nothing from this copy has been
-pushed to a hosting provider and no live instance is running. The `Dockerfile`
-builds a code-only image that runs locally; a public live demo additionally needs
-a container host and `QLOO_API_KEY` set in that host's environment settings, never
-in the image. Build and start configuration, port handling and the exact dashboard
-steps are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+**Published to GitHub, not yet deployed.** The repository is public at
+`https://github.com/MrSamarAhmed/Second-Opinion`, but no live demo URL exists yet.
+The `Dockerfile` builds a code-only image that runs locally; a public live demo
+additionally needs a container host and `QLOO_API_KEY` set in that host's
+environment settings, never in the image. Build and start configuration, port
+handling and the exact dashboard steps are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Repository layout
 
