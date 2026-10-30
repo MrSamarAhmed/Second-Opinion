@@ -423,8 +423,8 @@ the exact dashboard settings and the full verification record are in
 | Hosting provider | Render, web service built from this repository's `Dockerfile` |
 | Instance | **Free — $0/month** (0.1 CPU, 512 MB RAM), region Oregon / US West |
 | Idle spin-down | approximately **15 minutes** without traffic — the threshold Render documents for free services. Approximate, not a platform SLA. |
-| Cold-start delay | the first request after a spin-down waits for the instance to start. Render's notice for this service warns it can be delayed by **around 50 seconds or more**; one timed wake measured here on 2026-10-30 answered `GET /api/health` in **about 13 seconds**. Treat both as observed approximations — no exact startup time is promised. |
-| After the wake | requests are served normally while the instance stays awake — the same health request measured immediately afterwards took about **0.3 seconds**. |
+| Cold-start delay | the first request after a spin-down waits for the instance to start. Render's notice for this service warns it can be delayed by **around 50 seconds or more**; of the two timed wakes measured here on 2026-10-30, a cold `GET /api/health` answered in **12.8 s** and a cold page load in **12.4 s**. Treat both numbers as observed approximations — no exact startup time is promised. |
+| After the wake | requests are served normally while the instance stays awake — the same health request measured immediately afterwards took about **0.3 seconds**, and about **0.4 seconds** on the second occasion. |
 
 What that means in practice for someone evaluating the demo:
 
@@ -538,7 +538,7 @@ recomputed, blended into a score, or read as a claim about a listener.
   client on the deployed host; if `X-Forwarded-For` were ever absent, every visitor
   would share a single bucket, which fails closed rather than open. The numbers are
   disclosed rather than hidden: roughly 15 minutes idle, a wake Render warns can take
-  around 50 seconds and measured about 13 seconds here, both approximate and neither
+  around 50 seconds and measured 12.8 s and 12.4 s here, both approximate and neither
   a platform promise — see [Demo Availability](#demo-availability). The page itself
   says the same thing above the seed list.
 - The clean-copy audit verifies local no-key behavior; [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)

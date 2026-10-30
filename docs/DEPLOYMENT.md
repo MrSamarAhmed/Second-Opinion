@@ -45,12 +45,12 @@ are the parts a visitor notices:
 - **Idle instances spin down.** The free tier suspends a service after a period without
   traffic — Render puts the threshold at roughly 15 minutes — and the next request waits
   while the container starts. Render's notice on this service warns that the delay "can
-  delay requests by 50 seconds or more"; a wake timed here on 2026-10-30 brought
-  `GET /api/health` back in **about 13 seconds**, and the same request immediately after
-  it took about 0.3 seconds. Both figures are **observed approximations, not platform
-  promises** — the host gives an upper-end warning, this copy has one stopwatch sample of
-  it, and no exact startup time is guaranteed either way. A cold start plus a slow Qloo
-  response is the slowest path in the demo.
+  delay requests by 50 seconds or more"; two wakes timed here on 2026-10-30 came back in
+  **12.8 s** (a cold `GET /api/health`) and **12.4 s** (a cold page load), and the health
+  probe right after each took 0.29 s and 0.44 s. Both figures are **observed
+  approximations, not platform promises** — the host gives an upper-end warning, this copy
+  has two stopwatch samples of it, and no exact startup time is guaranteed either way. A
+  cold start plus a slow Qloo response is the slowest path in the demo.
 - **A spin-down resets the audit budget.** The buckets live in process memory, so
   every restart, redeploy or idle spin-down hands every client a fresh burst. The
   limiter is a quota guard, not access control, and on a free instance it is a floor
@@ -73,8 +73,8 @@ stopwatch in this copy.
 | Behaviour | What to expect | How it was established |
 | --- | --- | --- |
 | Idle spin-down | roughly **15 minutes** without traffic before the instance sleeps | Render's documented threshold for free services. The instance was found unwarmed after such a window on 2026-10-30 — one request took 12.8 s and the very next took 0.29 s, which is what a cold start looks like — so the sleep is observed; the threshold value itself is the host's. |
-| Cold-start delay | the first request after a spin-down waits for the container to start — around **50 seconds or more** per Render's notice on this service, **about 13 seconds** in the one wake timed here | Render's notice for the upper figure; `GET /api/health` measured at 12.8 s on 2026-10-30 for the lower. One sample, so it is an observation rather than a distribution, and neither number is a guaranteed startup time. |
-| Requests after the wake | served normally while the instance stays awake — the same probe repeated immediately took about **0.3 seconds** | measured, same session |
+| Cold-start delay | the first request after a spin-down waits for the container to start — around **50 seconds or more** per Render's notice on this service, **12.8 s** for a cold health probe and **12.4 s** for a cold page load in the two wakes timed here | Render's notice for the upper figure; timed on 2026-10-30 for the lower. Two samples, both well under the host's warning — an observation, not a distribution, and not a guaranteed startup time. |
+| Requests after the wake | served normally while the instance stays awake — the probe repeated immediately after each wake took **0.29 s** and **0.44 s** | measured, both sessions |
 | Audit budget | **resets on every restart**: a redeploy, a crash-and-relaunch or an idle spin-down hands every client a fresh burst, and two instances would double the allowance | the buckets are process-memory state in `throttle.py`, which writes nothing to disk; `tests/test_rate_limit.py::TestAuditBudget::test_a_restart_clears_the_buckets` pins the reset, and `test_refill_restores_service_without_a_restart` in the same class pins clock-based refill |
 | Resources | a free instance carries the host's ceilings: 0.1 CPU, 512 MB RAM, plus whatever monthly-hours and bandwidth terms the free tier applies | Render's plan terms; RAM/CPU read off the service page, the rest not re-measured here |
 | Availability | a free instance is **not an always-on service** — a visitor can arrive while it is starting | disclosed in the page header notice, in the README's "Demo Availability", and here |
@@ -257,7 +257,7 @@ instance type — the dashboard's compute picker answers it directly, and it let
 | Environment | `QLOO_API_KEY` as a **secret** in the service's Environment Variables section (Advanced, or Settings after creation) | Values are read from the environment only; nothing is committed. `SO_MODE` can be left unset — live is the default. |
 | Audit budget | `SO_AUDIT_PER_MINUTE`, `SO_AUDIT_BURST`, `SO_MAX_CONCURRENT_AUDITS` as **non-secret** environment variables, or leave them unset for 6/minute, burst 3, 2 in flight. **The live service sets `2`, `2` and `1`.** | These are what stop one visitor from spending your Qloo quota, and they are the **live** budget: only live audits reach Qloo. A live deployment needs no `SO_FIXTURE_AUDIT_*` setting — a `?mode=fixture` request there draws on its own separate budget and fails on the missing `data/fixtures`, so it can waste local work but never quota. The defaults are a demo budget, not a limit tuned for a panel of judges — see sizing below. |
 | Client identity | nothing to set | The limit keys on the **rightmost** `X-Forwarded-For` entry, falling back to the peer address. A proxy that replaces the header and a proxy that appends to it both put the real client last, so taking the last entry is right under either behavior and a client-supplied prefix buys nothing. Run it exposed directly, with no proxy, and every visitor shares one bucket — that fails closed, not open. |
-| Expect on free | idle instances spin down after a period without traffic — Render puts the threshold at roughly 15 minutes — and the first request after that waits for a cold start: the host's notice says "50 seconds or more", and the one wake timed here answered in about 13 seconds | The threshold is the host's figure; the ~13 seconds is a measurement taken here, and it is one sample, not a distribution. A cold start plus a live Qloo call is the slowest path in the demo. The same spin-down **resets the audit budget** for everyone, because the buckets live in process memory. |
+| Expect on free | idle instances spin down after a period without traffic — Render puts the threshold at roughly 15 minutes — and the first request after that waits for a cold start: the host's notice says "50 seconds or more", and the two wakes timed here answered in 12.8 s and 12.4 s | The threshold is the host's figure; the ~13 seconds is measured here, twice, on the same request. A cold start plus a live Qloo call is the slowest path in the demo. The same spin-down **resets the audit budget** for everyone, because the buckets live in process memory. |
 
 ### Sizing the audit budget against your quota
 
@@ -391,11 +391,13 @@ verified from outside. What is left:
   a deliberate permission trade, not an oversight. It also means the running service
   still serves the image built from `83887b0`: the hosting notice added to
   `web/index.html` in the cold-start disclosure commit is **not yet visible on the
-  public URL** — it appears the next time someone presses *Deploy*. The documents in
-  this repository describe the code at `main`, which does contain it.
+  public URL** — checked after the push, `GET /` on the live host still returns the
+  older page (36,389 bytes, with no notice), while the file at `main` is 37,734 bytes.
+  The notice appears the next time someone presses *Deploy*; the documents in this
+  repository describe the code at `main`, which does contain it.
 - Free-tier behaviour is a real limitation of the demo, not of the code: idle
   spin-down (roughly 15 minutes, the host's threshold), a cold start Render warns can
-  reach 50 seconds or more and that measured about 13 seconds in the one wake timed
+  reach 50 seconds or more and that measured 12.8 s and 12.4 s in the two wakes timed
   here, and an audit budget that resets with every restart. It is disclosed in the
   page header, in the README's "Demo Availability" and in "Operational notes" above —
   and it is *not* worked around: there is no keep-alive ping, because staying warm on
