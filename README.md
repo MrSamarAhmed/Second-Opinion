@@ -10,7 +10,9 @@ be pointed at, or is affinity the only thing there?**
 the credential held only as a server-side environment secret. Opening the page issues
 one live audit by itself — about three Qloo requests from the operator's key — while
 the two sidebar demonstrations cost nothing at all. What was verified against the
-public URL is in [Deployment](#deployment).
+public URL is in [Deployment](#deployment); because the instance is free it can be
+asleep between visits, and the spin-down and cold-start timings are in
+[Demo Availability](#demo-availability).
 
 For every candidate it shows four dimension receipts — genres, lyrical themes,
 audience, style — each with the exact source field in the payload returned for
@@ -405,13 +407,45 @@ Two properties of that deployment matter to anyone using it. **The first page lo
 runs a live audit on its own:** the interface audits the first seed as soon as it has
 the seed list, so simply opening the demo spends about three Qloo requests from the
 operator's credential, and each further seed click spends three more — four if the
-follow-up fires. And **the instance is free:** Render spins it down after a period of
-inactivity (its documentation says roughly 15 minutes), the first request after that
-waits for a cold start — Render's own notice on this service says 50 seconds or more —
-and because the audit budgets live in process memory, **a restart, a redeploy or an
-idle spin-down resets every client's budget to a full burst.** Build and start
-configuration, port handling, the exact dashboard settings and the full verification
-record are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+follow-up fires. And **the instance is free:** it suspends after a period without
+traffic, the first request after that pays a cold start, and because the audit budgets
+live in process memory **a restart, a redeploy or an idle spin-down resets every
+client's budget to a full burst.** The measured timings are in
+[Demo Availability](#demo-availability); build and start configuration, port handling,
+the exact dashboard settings and the full verification record are in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+## Demo Availability
+
+| Item | Value |
+| --- | --- |
+| Public demo | **<https://second-opinion-zwcb.onrender.com>** |
+| Hosting provider | Render, web service built from this repository's `Dockerfile` |
+| Instance | **Free — $0/month** (0.1 CPU, 512 MB RAM), region Oregon / US West |
+| Idle spin-down | approximately **15 minutes** without traffic — the threshold Render documents for free services. Approximate, not a platform SLA. |
+| Cold-start delay | the first request after a spin-down waits for the instance to start. Render's notice for this service warns it can be delayed by **around 50 seconds or more**; one timed wake measured here on 2026-10-30 answered `GET /api/health` in **about 13 seconds**. Treat both as observed approximations — no exact startup time is promised. |
+| After the wake | requests are served normally while the instance stays awake — the same health request measured immediately afterwards took about **0.3 seconds**. |
+
+What that means in practice for someone evaluating the demo:
+
+- **A slow first page is not an outage.** The application is starting, not failing. Wait
+  for it to load and try again; the notice above the seed list says the same thing in the
+  interface.
+- **Warm up before judging or demonstrating.** Load `GET /api/health` — it answers `200`
+  in any state and sends nothing to Qloo, so it costs the operator's quota nothing — then
+  open the page.
+- **Budgets refill on every wake.** The audit throttle is in-memory per instance, so a
+  spin-down hands every visitor a fresh burst; it bounds one client's rate, it does not
+  meter total spend across restarts.
+- **No keep-alive traffic is used, deliberately.** The service does nothing to stay awake,
+  and the page has no timer that re-requests anything; a loop that pinged the app to dodge
+  spin-down would also keep spending live audits, which cost Qloo requests. Cold starts
+  are disclosed instead of hidden.
+- **Free-tier limits are the host's, not the code's.** Resource and availability ceilings
+  on a $0 instance (CPU, memory, monthly hours, spin-down) are the host's documented
+  constraints; the application itself has no database, no build step and no dependencies,
+  so it runs unchanged on any host that gives it a `PORT` and the environment variables in
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Repository layout
 
@@ -502,7 +536,11 @@ recomputed, blended into a score, or read as a claim about a listener.
   start, and that spin-down refills every audit bucket — the quota guard is a floor,
   not a meter. Per-client bucket identity could not be observed from more than one
   client on the deployed host; if `X-Forwarded-For` were ever absent, every visitor
-  would share a single bucket, which fails closed rather than open.
+  would share a single bucket, which fails closed rather than open. The numbers are
+  disclosed rather than hidden: roughly 15 minutes idle, a wake Render warns can take
+  around 50 seconds and measured about 13 seconds here, both approximate and neither
+  a platform promise — see [Demo Availability](#demo-availability). The page itself
+  says the same thing above the seed list.
 - The clean-copy audit verifies local no-key behavior; [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
   records separately what was measured against the public URL. Neither pass has seen
   the follow-up branch fire against Qloo.

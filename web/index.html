@@ -31,6 +31,19 @@
   .badge.ok{color:var(--ok);border-color:rgba(52,211,153,.35)}
   .badge.warn{color:var(--weak);border-color:rgba(251,191,36,.35)}
 
+  /* Cold-start notice for the free hosting tier. Static text, no script: it must
+     never look like an error state, and it must not become a retry loop. */
+  .hosting{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;
+    border:1px solid rgba(251,191,36,.20);background:rgba(251,191,36,.045);
+    border-radius:10px;padding:11px 15px;margin:-4px 0 22px;
+    font-size:12.5px;line-height:1.55;color:var(--muted)}
+  .hosting .hchip{flex:none;font-size:10px;text-transform:uppercase;letter-spacing:.07em;
+    color:var(--weak);border:1px solid rgba(251,191,36,.28);border-radius:5px;
+    padding:3px 8px;margin-top:1px}
+  .hosting strong{color:var(--text);font-weight:550}
+  .hosting .hnote{flex:1 1 320px;min-width:0}
+  @media (max-width:860px){ .hosting{padding:10px 12px;font-size:12px;margin-bottom:18px} }
+
   .grid{display:grid;grid-template-columns:236px 1fr;gap:22px;align-items:start}
   @media (max-width:860px){ .grid{grid-template-columns:1fr} }
 
@@ -179,6 +192,15 @@
     </div>
     <div class="badges" id="badges"></div>
   </header>
+
+  <div class="hosting" role="note" aria-label="Demo hosting notice">
+    <span class="hchip">Demo hosting notice</span>
+    <span class="hnote"><strong>Second Opinion runs on Render's free instance.</strong>
+      It may spin down after roughly 15 minutes without traffic, so the first visit after
+      an idle period can take around 50 seconds while the application starts — please wait
+      for it to load. That delay is a cold start, not an outage, and requests after it are
+      served normally.</span>
+  </div>
 
   <div class="grid">
     <aside class="seeds panel">
