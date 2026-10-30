@@ -1,10 +1,64 @@
 # Deployment notes
 
-Status: **published to GitHub, not yet deployed.** The repository is public at
-`https://github.com/MrSamarAhmed/Second-Opinion` (commit `eb02b4c92e25685cae07424e8ab6cdf8a3fd4b8b`),
-but no hosting service has been created and no public demo URL exists yet.
-This file records what has been verified locally and the exact steps an operator
-performs.
+Status: **deployed.** The public demo is **<https://second-opinion-zwcb.onrender.com>**,
+built by Render from this repository's `Dockerfile` at commit
+`83887b02a68a7249de2f7f2a99db7e86c841194d` and running on a **$0/month free
+instance** in Oregon (US West). The source repository is public at
+`https://github.com/MrSamarAhmed/Second-Opinion`.
+This file records what has been verified locally, what was verified against the
+public URL, and the exact steps an operator performs.
+
+## Live deployment
+
+| Item | Value |
+| --- | --- |
+| URL | `https://second-opinion-zwcb.onrender.com` (TLS terminated at the host's edge; plain HTTP answers `301` and redirects to HTTPS) |
+| Host / service | Render web service `srv-dbi5e7dg1s2s73e28kd0`, first deploy `dep-dbi5e7lg1s2s73e28kq0`, 2026-10-30 |
+| Runtime | the repository's own `Dockerfile`, unmodified; build and deploy completed in 25.9 s |
+| Compute | Render **free**: $0/month, 0.1 CPU, 512 MB RAM, region Oregon (US West) |
+| Source connection | the **public repository URL**, not the Render GitHub App — so no repository-wide write permission was granted, and no auto-deploy on push |
+| Port / bind | the platform's `PORT` (Render assigns `10000`) on `0.0.0.0`; startup banner reads `Second Opinion listening on http://0.0.0.0:10000 (mode=live, key present)` |
+| Health check | `/api/health`, configured as the platform health-check path |
+| Secret | `QLOO_API_KEY` set **only** as a Render environment secret on the service. It is not in the image, the repository, the frontend, a log line or a URL, and the app exposes only whether a key is present |
+| Non-secret config | `SO_AUDIT_PER_MINUTE=2`, `SO_AUDIT_BURST=2`, `SO_MAX_CONCURRENT_AUDITS=1`; `SO_MODE` unset, so live is the default; the `SO_FIXTURE_AUDIT_*` family left at its defaults because a deployed instance has no `data/fixtures/` to read |
+
+Verified against the public URL on 2026-10-30, from outside the host:
+
+| Check | Result |
+| --- | --- |
+| `GET /api/health` | `200 {"ok": true}` |
+| `GET /api/seeds` | `200`, `mode: "live"`, `environment.live_ready: true`, host `https://hackathon.api.qloo.com`, 8 seeds, and no top-level `live_ready` key |
+| One deliberate live audit, `GET /api/audit?seed=Laufey&mode=live` | `200` in about 1.8 s, 20 candidates, **every candidate's receipts verified**, `investigation.triggered: false`, and the body free of the credential, any traceback and any local path. The per-candidate verdicts and affinities in that report are Qloo-derived output from a credentialed run, so they are not reproduced here |
+| `GET /api/demo?scenario=improves` | `200`, `mode: "synthetic"`, `follow_up_queries_used: 1`, outcome direction `improved`. This is invented evidence produced by the same agent, **not** a Qloo result, and the page labels it as synthetic |
+| `GET /api/demo?scenario=nope` | `400`, naming the two valid scenarios |
+| `GET /api/audit` (no seed) / a 121-character seed / `mode=fixture` | `400` `missing seed parameter`, `400` `seed is too long; the limit is 120 characters`, `503` `no fixture data: …` — the refusal names what is missing without disclosing the directory the server runs from |
+| The page in a browser | three fetches (`/api/seeds`, one live `/api/audit`, one `/api/demo`), all `200`; the live report rendered with its 25-step trace and the demonstration rendered under its own synthetic banner with a `follow-up · raised` chip; **the browser console stayed empty** |
+| Runtime log on the host | only `200` health probes plus the refusals provoked above — no exception, no traceback, no `500` |
+
+Three consequences of running this on a free instance, stated plainly because they
+are the parts a visitor notices:
+
+- **Opening the page spends Qloo requests.** The interface audits the first seed as
+  soon as it has the seed list, so a first visit costs about three requests from the
+  operator's credential before anyone clicks; each further seed click costs three
+  more, four if the follow-up fires. The demonstrations cost nothing.
+- **Idle instances spin down.** Render's free tier suspends a service after a period
+  without traffic — its documentation puts the threshold at roughly 15 minutes — and
+  its notice on this service warns that the next request "can delay requests by 50
+  seconds or more". That figure is the host's own; it has not been re-measured here.
+  A cold start plus a slow Qloo response is the slowest path in the demo.
+- **A spin-down resets the audit budget.** The buckets live in process memory, so
+  every restart, redeploy or idle spin-down hands every client a fresh burst. The
+  limiter is a quota guard, not access control, and on a free instance it is a floor
+  rather than a meter.
+
+What deployment has **not** yet shown: the follow-up re-read — the fourth Qloo
+request — has still never fired against real Qloo data. Every live audit run against
+the public URL reported `investigation.triggered: false` with `candidates_with_gap: 0`
+and stayed at three requests, so the investigation pass is demonstrated only by the
+two synthetic scenarios and by call-count tests, and the four-request path remains
+unverified in production. Nothing in this repository claims otherwise, and no
+Qloo-derived output from a credentialed run is stored here.
 
 The application defaults to live mode and its seed list is hand-authored, so a
 deployment target with a runtime `QLOO_API_KEY` can run without any captured Qloo
@@ -155,21 +209,29 @@ convenience only. In a container or on a host, the key comes from the platform.
 
 ### Free-tier container host: what to set (Render as the example)
 
-Verified against Render's documentation while preparing this copy; **the repository
-has since been published, but no account was created and nothing was deployed.**
+Written from Render's documentation, then **executed**: these are the settings the
+live service described above actually runs with. The one thing the documentation
+could not settle in advance was whether a Dockerfile build is available on the free
+instance type — the dashboard's compute picker answers it directly, and it let
+`$0 / month` be selected with Docker autofilled.
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Source | the published repository, build with the included `Dockerfile` | Render builds Dockerfiles for web services; no build command to invent. |
-| Runtime port | the platform's `PORT`; Render's default is `10000` | `server.py` reads `PORT` at startup. Confirmed in a local container: with `PORT=10000` the app answered on 10000. |
+| Source | the published repository, build with the included `Dockerfile` | Render builds Dockerfiles for web services; no build command to invent. Connecting by **public repository URL** avoids installing the Render GitHub App, which asks for all-repository access plus write access to workflows, deployments and hooks; the cost is no auto-deploy, which a frozen release does not need. |
+| Runtime port | the platform's `PORT`; Render's default is `10000` | `server.py` reads `PORT` at startup. Confirmed in a local container and on the live host, whose startup banner reads `listening on http://0.0.0.0:10000`. |
 | Bind address | `HOST` default `0.0.0.0` | Already the image default. |
 | Health check path | `/api/health` | Returns `200 {"ok": true}` with no key and no data, which is what a platform probe needs. |
 | Environment | `QLOO_API_KEY` as a **secret** in the service's Environment Variables section (Advanced, or Settings after creation) | Values are read from the environment only; nothing is committed. `SO_MODE` can be left unset — live is the default. |
-| Audit budget | `SO_AUDIT_PER_MINUTE`, `SO_AUDIT_BURST`, `SO_MAX_CONCURRENT_AUDITS` as **non-secret** environment variables, or leave them unset for 6/minute, burst 3, 2 in flight | These are what stop one visitor from spending your Qloo quota, and they are the **live** budget: only live audits reach Qloo. A live deployment needs no `SO_FIXTURE_AUDIT_*` setting — a `?mode=fixture` request there draws on its own separate budget and fails on the missing `data/fixtures`, so it can waste local work but never quota. The defaults are a demo budget, not a limit tuned for a panel of judges — see sizing below. |
+| Audit budget | `SO_AUDIT_PER_MINUTE`, `SO_AUDIT_BURST`, `SO_MAX_CONCURRENT_AUDITS` as **non-secret** environment variables, or leave them unset for 6/minute, burst 3, 2 in flight. **The live service sets `2`, `2` and `1`.** | These are what stop one visitor from spending your Qloo quota, and they are the **live** budget: only live audits reach Qloo. A live deployment needs no `SO_FIXTURE_AUDIT_*` setting — a `?mode=fixture` request there draws on its own separate budget and fails on the missing `data/fixtures`, so it can waste local work but never quota. The defaults are a demo budget, not a limit tuned for a panel of judges — see sizing below. |
 | Client identity | nothing to set | The limit keys on the **rightmost** `X-Forwarded-For` entry, falling back to the peer address. A proxy that replaces the header and a proxy that appends to it both put the real client last, so taking the last entry is right under either behavior and a client-supplied prefix buys nothing. Run it exposed directly, with no proxy, and every visitor shares one bucket — that fails closed, not open. |
-| Expect on free | idle instances spin down after roughly 15 minutes without traffic, and the first request after that waits for a cold start | Render documents free-tier spin-down; a cold start plus a live Qloo call is the slowest path in the demo. The same spin-down **resets the audit budget** for everyone, because the buckets live in process memory. |
+| Expect on free | idle instances spin down after a period without traffic — Render's documentation puts the threshold at roughly 15 minutes — and its notice on this service warns the next request "can delay requests by 50 seconds or more" | Both figures are the host's, not measurements taken here. A cold start plus a live Qloo call is the slowest path in the demo. The same spin-down **resets the audit budget** for everyone, because the buckets live in process memory. |
 
 ### Sizing the audit budget against your quota
+
+Size it in audits **per visit, not per click**: the interface runs its first seed as
+soon as the page has the seed list, so loading the demo is already one audit — about
+three Qloo requests, four if the follow-up fires — and a visitor who never touches
+anything still spent it.
 
 The unit to think in is Qloo requests, not page views: one audit is three of them
 (`/search`, the seed record, the candidate set) and **four when the agent's
@@ -218,55 +280,85 @@ relying on it: free-tier RAM/CPU, monthly hours, bandwidth limits, and whether
 free web services are still offered in your region. None of them change the
 configuration above.
 
-## Minimum steps to a public demo
+## Steps to a public demo
 
-1. Use the already-published GitHub repository (`MrSamarAhmed/Second-Opinion`),
-   branch `main`, and create a web service from it using the included `Dockerfile`
-   (or any host that runs a long-lived process with a `PORT`). If your host's free
-   tier does not offer a Docker instance, the app is standard-library-only, so an
-   empty `requirements.txt` and the start command `python3 -m second_opinion.server`
-   also work.
-2. Set `QLOO_API_KEY` as a runtime secret in the platform's environment settings.
+These are the steps to follow, and the record of what the live deployment did at
+each one.
+
+1. Use the published GitHub repository (`MrSamarAhmed/Second-Opinion`), branch
+   `main`, and create a web service from it using the included `Dockerfile` (or any
+   host that runs a long-lived process with a `PORT`). If your host's free tier does
+   not offer a Docker instance, the app is standard-library-only, so an empty
+   `requirements.txt` and the start command `python3 -m second_opinion.server` also
+   work. — **Done with the `Dockerfile` on the free instance type; the
+   `requirements.txt` fallback was not needed.**
+2. Set `QLOO_API_KEY` as a runtime secret in the platform's environment settings. —
+   **Done: entered into Render's environment-secret field by the operator, so the
+   value never passed through this repository, a command line, a log or a chat.**
 3. Decide the audit budget for the audience you expect — see "Sizing the audit
    budget" above — and set `SO_AUDIT_PER_MINUTE`, `SO_AUDIT_BURST` and
    `SO_MAX_CONCURRENT_AUDITS` as non-secret variables, or accept the defaults.
    These are the live knobs, and live is the only mode that spends anything; the
    `SO_FIXTURE_AUDIT_*` family bounds local fixture reads and needs no setting on
-   a live deployment.
-4. Configure the health check path as `/api/health`.
-5. Let the platform assign the port; the app binds `$PORT`.
+   a live deployment. — **Done: `2` / `2` / `1`, confirmed from the startup banner.**
+4. Configure the health check path as `/api/health`. — **Done.**
+5. Let the platform assign the port; the app binds `$PORT`. — **Done: `PORT=10000`.**
 6. Confirm from outside: `GET /api/seeds` returns 8 seeds with
    `environment.live_ready: true`, then `GET /api/audit?seed=Laufey&mode=live`
-   returns `ok: true`.
+   returns `ok: true`. — **Both confirmed from outside the host, and the live audit
+   returned 20 candidates with every receipt verified.**
 7. Confirm the demonstration path works on the deployed instance too:
    `GET /api/demo` returns `ok: true` with `mode: "synthetic"`. It needs no key
    and no `data/`, so it is the half of the product a judge can always run — and
    if it does not work, the deployment has lost the agentic demonstration even
-   though audits still pass.
+   though audits still pass. — **Confirmed over HTTP and in the browser, including
+   the synthetic banner and the `follow-up · raised` chip.**
 8. Confirm the protection is live: repeat that audit until the budget runs out
    and check that you get `429` with a `Retry-After` header and a `limit` block,
-   and that `/api/seeds` keeps answering `200` throughout.
+   and that `/api/seeds` keeps answering `200` throughout. — **Not exercised on the
+   public URL: draining the budget means spending several more live audits of the
+   operator's quota purely to watch a refusal, so this row is verified in
+   `tests/test_rate_limit.py` and by the local container sweep instead. What *was*
+   confirmed on the public URL is the zero-cost half: `400` for a missing and an
+   oversized seed, `503` for fixture mode with no `data/fixtures`, and `/api/seeds`
+   answering `200` throughout.**
 9. Open the page, pick a seed, expand two candidates, and check that receipts
    say "Every shared term above was re-derived from the source payload." Then run
    a demonstration and check the card that says what the agent did after the
    first pass, so the live report and the synthetic one are visibly different
-   kinds of evidence.
-10. Only then call the URL a working live demo.
+   kinds of evidence. — **Partly done on the public page: the live report rendered
+   with its trace, the demonstration rendered its own investigation card, and the
+   console stayed empty. Candidate rows were not expanded on the deployed page;
+   that check is verified locally.**
+10. Only then call the URL a working live demo. — **The URL above is a working live
+    demo on those terms, with the two gaps in steps 8 and 9 stated rather than
+    glossed.**
 
-Nothing here has been executed against a hosting provider in this clean-copy
-preparation, so no deployment claim is made.
+The deployment itself has been executed against a hosting provider and the results
+in "Live deployment" are measurements taken from outside it. What remains unproven
+is narrow and named there: the fourth Qloo request.
 
-## Remaining deployment blockers
+## Remaining release blockers
 
-- The GitHub repository has been published, but a hosting service has not been
-  created from it; the operator must authorize and run that step.
-- No public demo URL exists.
-- One credentialed live audit has been driven through this copy's own server and
-  returned `ok: true` with every receipt verified, so the live path is no longer
-  an untested claim. What is still untested against Qloo itself is the **fourth
-  request**: no run available to the authors has met the gap condition, so the
-  follow-up branch has been exercised only against stubs and the synthetic
-  demonstrations.
+Deployment is no longer one of them: the service is live at the URL above and was
+verified from outside. What is left:
+
+- The submission entry itself has not been filed. It needs the repository link, the
+  demo URL and the written description; nothing about the deployment blocks it.
+- The **fourth Qloo request** — the follow-up re-read — has never fired against real
+  Qloo data, in this copy or on the deployed instance. No run has met the gap
+  condition, so that branch is exercised only against stubs and the synthetic
+  demonstrations, and it stays unverified in production until a live audit happens
+  to need it.
+- The `429` path has not been demonstrated on the public URL, because draining the
+  budget would spend the operator's quota just to watch a refusal. It is covered by
+  tests and by the local container sweep.
+- The service has no auto-deploy: it was connected by public repository URL rather
+  than by installing the Render GitHub App, so a redeploy is a manual click. That is
+  a deliberate permission trade, not an oversight.
+- Free-tier behaviour is a real limitation of the demo, not of the code: idle
+  spin-down, a cold start that Render puts at 50 seconds or more, and an audit budget
+  that resets with every restart.
 - Qloo-derived outputs from a credentialed run (per-pair states, affinities,
   calibration numbers) stay out of the repository, as the official guide requires.
 

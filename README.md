@@ -5,6 +5,13 @@ score. This tool answers a narrower question about each of those
 recommendations: **is the recommendation backed by descriptive metadata that can
 be pointed at, or is affinity the only thing there?**
 
+**Live demo: <https://second-opinion-zwcb.onrender.com>.** It runs this repository's
+`Dockerfile` on Render's free tier, in live mode against the Qloo hackathon API, with
+the credential held only as a server-side environment secret. Opening the page issues
+one live audit by itself — about three Qloo requests from the operator's key — while
+the two sidebar demonstrations cost nothing at all. What was verified against the
+public URL is in [Deployment](#deployment).
+
 For every candidate it shows four dimension receipts — genres, lyrical themes,
 audience, style — each with the exact source field in the payload returned for
 that audit, the shared terms, and an overlap coefficient. It then emits one
@@ -375,12 +382,36 @@ local path.
 
 ## Deployment
 
-**Published to GitHub, not yet deployed.** The repository is public at
-`https://github.com/MrSamarAhmed/Second-Opinion`, but no live demo URL exists yet.
-The `Dockerfile` builds a code-only image that runs locally; a public live demo
-additionally needs a container host and `QLOO_API_KEY` set in that host's
-environment settings, never in the image. Build and start configuration, port
-handling and the exact dashboard steps are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+**Deployed.** The public demo is **<https://second-opinion-zwcb.onrender.com>**, built
+by Render from this repository's `Dockerfile` at commit `83887b0` and running on the
+**$0/month free instance** (0.1 CPU, 512 MB, Oregon / US West). `QLOO_API_KEY` is set
+only as a Render environment secret on the service — never in the image, the
+repository, the frontend or a log, and the app reports only whether a key is present.
+The container listens on the platform's `$PORT` (Render assigns `10000`), binds
+`0.0.0.0`, and uses `/api/health` as its platform health check.
+
+Verified against the public URL on 2026-10-30:
+
+| Check | Result |
+| --- | --- |
+| `GET /api/health` | `200 {"ok": true}`; plain HTTP answers `301` and redirects to HTTPS |
+| `GET /api/seeds` | `200`, `mode: "live"`, `environment.live_ready: true`, 8 seeds |
+| One live audit (`seed=Laufey`) | `200` in about 1.8 s, 20 candidates, **every receipt verified**, and no credential, traceback or local path anywhere in the body. The per-candidate verdicts in that report are Qloo-derived output, so they are not reproduced here — see the Qloo data-use note below |
+| `GET /api/demo?scenario=improves` | `200`, `mode: "synthetic"`, one follow-up query used, outcome direction `improved` — invented evidence, **not** a Qloo result |
+| `GET /api/demo?scenario=nope` | `400`, naming the two valid scenarios |
+| The page in a browser | the live report rendered, a demonstration click rendered its own synthetic banner, the console stayed empty, and the runtime log recorded no application error |
+
+Two properties of that deployment matter to anyone using it. **The first page load
+runs a live audit on its own:** the interface audits the first seed as soon as it has
+the seed list, so simply opening the demo spends about three Qloo requests from the
+operator's credential, and each further seed click spends three more — four if the
+follow-up fires. And **the instance is free:** Render spins it down after a period of
+inactivity (its documentation says roughly 15 minutes), the first request after that
+waits for a cold start — Render's own notice on this service says 50 seconds or more —
+and because the audit budgets live in process memory, **a restart, a redeploy or an
+idle spin-down resets every client's budget to a full burst.** Build and start
+configuration, port handling, the exact dashboard settings and the full verification
+record are in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Repository layout
 
@@ -458,16 +489,23 @@ recomputed, blended into a score, or read as a claim about a listener.
   terms there. So the second look is demonstrated honestly, by the two synthetic
   scenarios and by call-count tests against the real agent, and a live audit
   today will usually show it declining to run. It has not yet been observed
-  firing against Qloo itself.
+  firing against Qloo itself, and that is still true after deployment: the live
+  audits run against the public URL on 2026-10-30 each reported
+  `investigation.triggered: false` and `candidates_with_gap: 0` and stayed at
+  three requests, so the fourth Qloo request remains unverified in production.
 - The audit budget is in-memory, per-instance, per-mode state: a restart, a
   redeploy or a free-tier idle spin-down refills every bucket, and running two
   instances doubles the allowance. It is a quota guard, not access control — the
   demo has no sign-in, so anyone within budget can run an audit.
-- No hosted demo URL exists yet, while the event's submission rules ask for a link
-  to a functional, publicly published demo application. Until it is deployed, the
-  live path is verified locally: against a stubbed adapter in the suite and
-  against one deliberate credentialed audit through this copy's own server.
-- The clean-copy audit verifies local no-key behavior, not a hosted deployment.
+- The hosted demo runs on a **free** instance, so it is intermittent in two ways the
+  code cannot fix: it spins down when idle and the next visitor pays for the cold
+  start, and that spin-down refills every audit bucket — the quota guard is a floor,
+  not a meter. Per-client bucket identity could not be observed from more than one
+  client on the deployed host; if `X-Forwarded-For` were ever absent, every visitor
+  would share a single bucket, which fails closed rather than open.
+- The clean-copy audit verifies local no-key behavior; [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+  records separately what was measured against the public URL. Neither pass has seen
+  the follow-up branch fire against Qloo.
 
 ## License
 
